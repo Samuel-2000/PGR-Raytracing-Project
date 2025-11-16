@@ -27,7 +27,8 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("center", &Sphere::center)
         .def_readwrite("radius", &Sphere::radius)
         .def_readwrite("material", &Sphere::material)
-        .def_readwrite("object_id", &Sphere::object_id);
+        .def_readwrite("object_id", &Sphere::object_id)
+        .def_readwrite("name", &Sphere::name);
     
     py::class_<Scene>(m, "Scene")
         .def(py::init<>())

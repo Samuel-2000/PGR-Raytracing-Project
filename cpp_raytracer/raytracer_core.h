@@ -95,8 +95,9 @@ struct Sphere {
     double radius;
     Material material;
     int object_id;
+    std::string name;
     
-    Sphere() : center(0,0,0), radius(1.0), material(), object_id(0) {}
+    Sphere() : center(0,0,0), radius(1.0), material(), object_id(0), name("") {}
     
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
 };
