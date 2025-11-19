@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""
-Build and Run Script for C++ Ray Tracer
-"""
+# run.py
+
 import os
 import sys
 import subprocess
@@ -109,16 +108,35 @@ def main():
     
     # Import and run the main application
     try:
-        from main import main as run_app
+        from PyQt5.QtWidgets import QApplication
+        from gui import GUI
+
+        app = QApplication(sys.argv)
+        
         print("\n" + "=" * 50)
         print("🎮 Starting Interactive Ray Tracer GUI...")
         print("=" * 50)
-        run_app()
+        
+        gui = GUI()
+        gui.show()
+        
+        print("Controls:")
+        print("- WASD/Arrow keys: Move selected object")
+        print("- Q/E: Move object up/down") 
+        print("- Left click + drag: Drag object in view plane")
+        print("- UI controls: Adjust rendering and material settings")
+        print("=" * 50)
+        
+        sys.exit(app.exec_())
+
+
     except ImportError as e:
         print(f"💥 Failed to import main application: {e}")
         sys.exit(1)
+
     except KeyboardInterrupt:
         print("\n👋 Ray tracer stopped by user")
+
     except Exception as e:
         print(f"💥 Application error: {e}")
         import traceback
