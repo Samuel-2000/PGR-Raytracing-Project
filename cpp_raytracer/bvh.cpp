@@ -89,60 +89,74 @@ bool BVH::box_compare(const Sphere& a, const Sphere& b, int axis) {
 }
 
 BVHNode* BVH::build_tree(std::vector<Sphere>& spheres, size_t start, size_t end, int depth) {
-    BVHNode* node = new BVHNode();
+    if (start >= end) {
+        return nullptr; // No spheres in this range
+    }
     
-    // Limit recursion depth to prevent stack overflow
-    if (depth > 100) {
-        // Create leaf node with all remaining spheres
-        // For simplicity, just take the first sphere
-        if (start < end) {
+    BVHNode* node = new BVHNode();
+    size_t span = end - start;
+    
+    // For small numbers of spheres, create a leaf node containing all of them
+    if (span <= 2) {
+        // Calculate bounding box for all spheres in this leaf
+        AABB box = sphere_bounding_box(spheres[start]);
+        for (size_t i = start + 1; i < end; i++) {
+            box = AABB::surrounding_box(box, sphere_bounding_box(spheres[i]));
+        }
+        node->box = box;
+        
+        // Store all spheres in this leaf (you'll need to modify BVHNode structure)
+        // For now, we'll handle the single sphere case
+        if (span == 1) {
             node->sphere = spheres[start];
-            node->box = sphere_bounding_box(spheres[start]);
             node->is_leaf = true;
+        } else {
+            // For two spheres, create two child leaf nodes
+            node->left = build_tree(spheres, start, start + 1, depth + 1);
+            node->right = build_tree(spheres, start + 1, end, depth + 1);
+            node->box = AABB::surrounding_box(node->left->box, node->right->box);
+            node->is_leaf = false;
         }
         return node;
     }
     
-    size_t span = end - start;
-    if (span == 1) {
-        // Leaf node with single sphere
-        node->sphere = spheres[start];
-        node->box = sphere_bounding_box(spheres[start]);
-        node->is_leaf = true;
-        return node;
-    }
-    else if (span == 2) {
-        // Create two leaf nodes
-        node->left = build_tree(spheres, start, start + 1, depth + 1);
-        node->right = build_tree(spheres, start + 1, end, depth + 1);
-        node->box = AABB::surrounding_box(node->left->box, node->right->box);
-        node->is_leaf = false;
-        return node;
-    }
-    
-    // Calculate bounding box for all spheres in this node
-    AABB box = sphere_bounding_box(spheres[start]);
+    // Calculate total bounding box
+    AABB total_box = sphere_bounding_box(spheres[start]);
     for (size_t i = start + 1; i < end; i++) {
-        box = AABB::surrounding_box(box, sphere_bounding_box(spheres[i]));
+        total_box = AABB::surrounding_box(total_box, sphere_bounding_box(spheres[i]));
     }
-    node->box = box;
+    node->box = total_box;
     
-    // Choose split axis based on the largest extent
-    Vector3 extent = box.max - box.min;
-    int axis = 0;
-    if (extent.y > extent.x) axis = 1;
-    if (extent.z > extent.y && extent.z > extent.x) axis = 2;
+    // Choose split axis based on largest extent
+    Vector3 extent = total_box.max - total_box.min;
+    int axis = (extent.x > extent.y && extent.x > extent.z) ? 0 : 
+               (extent.y > extent.z) ? 1 : 2;
     
-    // Sort spheres along the chosen axis
+    // Sort only the portion we're working with
     auto comparator = [axis, this](const Sphere& a, const Sphere& b) {
         return this->box_compare(a, b, axis);
     };
     std::sort(spheres.begin() + start, spheres.begin() + end, comparator);
     
+    // Split at midpoint
     size_t mid = start + span / 2;
+    
+    // Recursively build children
     node->left = build_tree(spheres, start, mid, depth + 1);
     node->right = build_tree(spheres, mid, end, depth + 1);
     node->is_leaf = false;
+    
+    // Handle case where one child might be null
+    if (node->left == nullptr) {
+        BVHNode* temp = node->right;
+        delete node;
+        return temp;
+    }
+    if (node->right == nullptr) {
+        BVHNode* temp = node->left;
+        delete node;
+        return temp;
+    }
     
     return node;
 }

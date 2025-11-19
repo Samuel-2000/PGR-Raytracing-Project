@@ -1,4 +1,4 @@
-# interaction.py - UPDATED VERSION
+# interaction.py
 
 import numpy as np
 import time
@@ -10,8 +10,43 @@ import math
 from denoiser import Denoiser
 from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3, Camera
 
+
+class Matrix3:
+    """Simple 3x3 matrix for camera rotations"""
+    
+    @staticmethod
+    def rotation_y(angle: float) -> 'Matrix3':
+        c, s = math.cos(angle), math.sin(angle)
+        return Matrix3([
+            [c, 0, s],
+            [0, 1, 0],
+            [-s, 0, c]
+        ])
+    
+    @staticmethod
+    def rotation_axis(axis: Vector3, angle: float) -> 'Matrix3':
+        c, s = math.cos(angle), math.sin(angle)
+        x, y, z = axis.x, axis.y, axis.z
+        
+        return Matrix3([
+            [c + (1-c)*x*x, (1-c)*x*y - s*z, (1-c)*x*z + s*y],
+            [(1-c)*x*y + s*z, c + (1-c)*y*y, (1-c)*y*z - s*x],
+            [(1-c)*x*z - s*y, (1-c)*y*z + s*x, c + (1-c)*z*z]
+        ])
+    
+    def __init__(self, data):
+        self.data = data
+    
+    def __mul__(self, vec: Vector3) -> Vector3:
+        m = self.data
+        return Vector3(
+            m[0][0]*vec.x + m[0][1]*vec.y + m[0][2]*vec.z,
+            m[1][0]*vec.x + m[1][1]*vec.y + m[1][2]*vec.z,
+            m[2][0]*vec.x + m[2][1]*vec.y + m[2][2]*vec.z
+        )
+
 class RayTracerInteraction:
-    """C++ Ray Tracer with Full Interactive Controls - FIXED VERSION"""
+    """C++ Ray Tracer with Full Interactive Controls"""
     
     def __init__(self, width: int = 400, height: int = 300):
         self.width = width
@@ -26,7 +61,7 @@ class RayTracerInteraction:
         self.camera = self.ray_tracer.get_camera()
         
         # Initialize camera to safe position
-        self.camera.position = Vector3(0, 2, 5)  # Safer starting position
+        self.camera.position = Vector3(0, 2, 5)
         self.camera.target = Vector3(0, 0, -1)
         self.camera.up = Vector3(0, 1, 0)
         self.camera.fov = 45.0
@@ -39,16 +74,16 @@ class RayTracerInteraction:
         
         # Settings with safer defaults
         self.settings = {
-            'max_samples': 32,  # Reduced for faster feedback
-            'samples_per_batch': 8,  # Reduced for stability
-            'max_depth': 4,  # Reduced for stability
+            'max_samples': 32,
+            'samples_per_batch': 8,
+            'max_depth': 4,
             'exposure': 1.5,
             'enhance_image': True,
             'show_denoisers': False,
             'selected_denoisers': ['bilateral'],
-            'selected_object': 1,  # Start with first interactive object
-            'move_speed': 0.3,  # Slower movement
-            'camera_move_speed': 0.05,  # Slower camera movement
+            'selected_object': 1,
+            'move_speed': 0.3,
+            'camera_move_speed': 0.5,
         }
         
         # Object manipulation state
@@ -56,8 +91,8 @@ class RayTracerInteraction:
         self.camera_dragging = False
         self.last_mouse_pos = None
         
-        # Thread safety
-        self.render_lock = threading.Lock()
+        # Thread safety - use RLock for reentrant locks
+        self.render_lock = threading.RLock()
         
         # Denoiser
         self.denoiser = Denoiser()
@@ -65,7 +100,7 @@ class RayTracerInteraction:
         print(f"✓ Initialized C++ Ray Tracer: {width}x{height}")
 
     def create_interactive_scene(self) -> Scene:
-        """Create a scene with interactive objects"""
+        """Create a scene with interactive objects - FIXED VERSION"""
         scene = Scene()
         scene.background_color = Vector3(0.05, 0.05, 0.1)
         
@@ -73,32 +108,36 @@ class RayTracerInteraction:
         ground_material = Material()
         ground_material.albedo = Vector3(0.9, 0.9, 0.9)
         ground = Sphere()
-        ground.center = Vector3(0, -101, 0)
+        ground.center = Vector3(0, -100.5, 0)  # Fixed: deeper ground
         ground.radius = 100.0
         ground.material = ground_material
         ground.object_id = 0
         ground.name = "Ground"
         scene.add_sphere(ground)
         
-        # Interactive objects
+        # Interactive objects - FIXED: better distribution
         objects_data = [
-            # Spheres
-            {"type": "sphere", "pos": (-2.0, 0.5, -6.0), "color": (0.9, 0.1, 0.1), 
-             "metal": 0.9, "rough": 0.1, "emission": (0,0,0), "radius": 0.8, "name": "Red Metallic"},
-            {"type": "sphere", "pos": (0.0, 0.5, -6.0), "color": (0.1, 0.9, 0.1), 
-             "metal": 0.0, "rough": 0.3, "emission": (0,0,0), "radius": 0.8, "name": "Green Dielectric"},
-            {"type": "sphere", "pos": (2.0, 0.5, -6.0), "color": (0.1, 0.1, 0.9), 
-             "metal": 0.0, "rough": 0.0, "emission": (0,0,0), "radius": 0.8, "name": "Blue Glass"},
-            {"type": "sphere", "pos": (-1.0, 2.0, -4.0), "color": (0.9, 0.9, 0.1), 
-             "metal": 0.5, "rough": 0.2, "emission": (0,0,0), "radius": 0.6, "name": "Yellow Mixed"},
+            # Main spheres
+            {"type": "sphere", "pos": (-2.0, 0.5, -3.0), "color": (0.9, 0.1, 0.1), 
+             "metal": 0.9, "rough": 0.1, "emission": (0,0,0), "radius": 0.5, "name": "Red Metallic"},
+            {"type": "sphere", "pos": (0.0, 0.5, -3.0), "color": (0.1, 0.9, 0.1), 
+             "metal": 0.0, "rough": 0.3, "emission": (0,0,0), "radius": 0.5, "name": "Green Dielectric"},
+            {"type": "sphere", "pos": (2.0, 0.5, -3.0), "color": (0.1, 0.1, 0.9), 
+             "metal": 0.0, "rough": 0.0, "emission": (0,0,0), "radius": 0.5, "name": "Blue Glass"},
             
-            # Lights
-            {"type": "light", "pos": (0, 5, -2), "color": (1, 1, 1), 
-             "emission": (15, 15, 12), "radius": 0.8, "name": "Main Light"},
-            {"type": "light", "pos": (-3, 3, 0), "color": (1, 1, 1), 
-             "emission": (8, 5, 3), "radius": 0.5, "name": "Warm Light"},
-            {"type": "light", "pos": (3, 3, 0), "color": (1, 1, 1), 
-             "emission": (3, 5, 8), "radius": 0.5, "name": "Cool Light"},
+            # Additional spheres
+            {"type": "sphere", "pos": (-1.0, 0.3, -1.5), "color": (0.9, 0.9, 0.1), 
+             "metal": 0.5, "rough": 0.2, "emission": (0,0,0), "radius": 0.3, "name": "Yellow Mixed"},
+            {"type": "sphere", "pos": (1.0, 0.3, -1.5), "color": (0.9, 0.1, 0.9), 
+             "metal": 0.2, "rough": 0.8, "emission": (0,0,0), "radius": 0.3, "name": "Purple Rough"},
+            
+            # Lights - FIXED: better positioning
+            {"type": "light", "pos": (0, 3, -1), "color": (1, 1, 1), 
+             "emission": (10, 10, 8), "radius": 0.3, "name": "Main Light"},
+            {"type": "light", "pos": (-2, 2, 0), "color": (1, 1, 1), 
+             "emission": (5, 3, 2), "radius": 0.2, "name": "Warm Light"},
+            {"type": "light", "pos": (2, 2, 0), "color": (1, 1, 1), 
+             "emission": (2, 3, 5), "radius": 0.2, "name": "Cool Light"},
         ]
         
         for i, data in enumerate(objects_data, 1):
@@ -112,7 +151,7 @@ class RayTracerInteraction:
             else:
                 material.metallic = data["metal"]
                 material.roughness = data["rough"]
-                material.emission = Vector3(*data["emission"])
+                material.emission = Vector3(0, 0, 0)  # Ensure no emission for non-lights
                 material.ior = 1.5
             
             sphere = Sphere()
@@ -140,14 +179,14 @@ class RayTracerInteraction:
     def select_object_by_click(self, x: float, y: float) -> bool:
         """Select object by screen coordinates - FIXED VERSION"""
         try:
-            # Use C++ ray casting for object selection
-            object_id = self.ray_tracer.select_object(x, y, self.width, self.height)
-            if object_id >= 0 and object_id < len(self.scene.spheres):
-                self.settings['selected_object'] = object_id
-                obj = self.get_selected_object()
-                if obj:
-                    print(f"Selected: {obj.name} (ID: {obj.object_id})")
-                    return True
+            with self.render_lock:
+                object_id = self.ray_tracer.select_object(x, y, self.width, self.height)
+                if object_id >= 0 and object_id < len(self.scene.spheres):
+                    self.settings['selected_object'] = object_id
+                    obj = self.get_selected_object()
+                    if obj:
+                        print(f"Selected: {obj.name} (ID: {obj.object_id})")
+                        return True
         except Exception as e:
             print(f"Object selection error: {e}")
         return False
@@ -164,7 +203,7 @@ class RayTracerInteraction:
                 
                 # Add bounds checking
                 obj.center.x = max(-8, min(8, obj.center.x))
-                obj.center.y = max(0.2, min(8, obj.center.y))
+                obj.center.y = max(0.1, min(8, obj.center.y))  # Fixed: avoid going underground
                 obj.center.z = max(-8, min(2, obj.center.z))
                 
                 self.scene.build_bvh()
@@ -174,7 +213,7 @@ class RayTracerInteraction:
     def move_camera(self, dx: float, dy: float, dz: float):
         """Move camera in world space - FIXED VERSION"""
         with self.render_lock:
-            speed = self.settings['camera_move_speed']
+            speed = self.settings['camera_move_speed'] * 2.0  # Increased for responsiveness
             
             # Calculate movement vectors based on camera orientation
             forward = (self.camera.target - self.camera.position).normalize()
@@ -189,36 +228,35 @@ class RayTracerInteraction:
             self.restart_rendering()
 
     def rotate_camera(self, dx: float, dy: float):
-        """Rotate camera around target - SIMPLIFIED VERSION"""
+        """Rotate camera around target - FIXED VERSION"""
         with self.render_lock:
-            # Simple rotation - adjust camera position around target
-            angle_x = dx * 0.5  # Reduced sensitivity
-            angle_y = dy * 0.5
+            sensitivity = 2.0
             
-            # Get vector from target to camera
-            vec = self.camera.position - self.camera.target
+            # Get vector from camera to target
+            forward = self.camera.target - self.camera.position
+            distance = forward.length()
+            forward = forward.normalize()
             
-            # Rotate around Y axis (horizontal)
-            cos_x = math.cos(angle_x)
-            sin_x = math.sin(angle_x)
-            new_x = vec.x * cos_x - vec.z * sin_x
-            new_z = vec.x * sin_x + vec.z * cos_x
-            vec = Vector3(new_x, vec.y, new_z)
+            right = forward.cross(self.camera.up).normalize()
+            up = right.cross(forward).normalize()
             
-            # Rotate around X axis (vertical) with limits
-            cos_y = math.cos(angle_y)
-            sin_y = math.sin(angle_y)
-            new_y = vec.y * cos_y - vec.z * sin_y
-            new_z = vec.y * sin_y + vec.z * cos_y
+            # Rotate around vertical axis (yaw)
+            yaw_rotation = Matrix3.rotation_y(dx * sensitivity)
+            forward = yaw_rotation * forward
             
-            # Limit vertical rotation
-            if abs(new_y) < 3.0:  # Prevent flipping
-                vec = Vector3(vec.x, new_y, new_z)
+            # Rotate around right axis (pitch) with limits
+            pitch = dy * sensitivity
+            pitch = max(-1.4, min(1.4, pitch))  # Limit pitch to ±80 degrees
             
-            # Update camera position
-            self.camera.position = self.camera.target + vec
+            pitch_rotation = Matrix3.rotation_axis(right, pitch)
+            forward = pitch_rotation * forward
+            
+            # Update camera
+            self.camera.target = self.camera.position + forward * distance
+            self.camera.up = up  # Keep up vector consistent
             
             self.restart_rendering()
+
 
     def update_object_material(self, property_name: str, value: float):
         """Update material property of selected object"""
@@ -266,9 +304,6 @@ class RayTracerInteraction:
             self.accumulated_image = None
             self.total_samples = 0
             self.frame_queue = Queue()
-            
-            # Force BVH rebuild
-            self.scene.build_bvh()
             
             # Start fresh
             self.start_rendering()
@@ -419,3 +454,4 @@ class RayTracerInteraction:
             return self.frame_queue.get_nowait()
         except:
             return None
+        

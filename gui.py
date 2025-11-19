@@ -387,8 +387,8 @@ class ControlPanel(QWidget):
         self.btn_right.clicked.connect(lambda: self.debounced_move(1, 0, 0))
         self.btn_up.clicked.connect(lambda: self.debounced_move(0, 1, 0))
         self.btn_down.clicked.connect(lambda: self.debounced_move(0, -1, 0))
-        self.btn_forward.clicked.connect(lambda: self.debounced_move(0, 0, -1))
-        self.btn_backward.clicked.connect(lambda: self.debounced_move(0, 0, 1))
+        self.btn_forward.clicked.connect(lambda: self.debounced_move(0, 0, 1))
+        self.btn_backward.clicked.connect(lambda: self.debounced_move(0, 0, -1))
         
         group.setLayout(layout)
         return group
