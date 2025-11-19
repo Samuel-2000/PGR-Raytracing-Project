@@ -41,15 +41,20 @@ struct Vector3 {
                       z * other.x - x * other.z, 
                       x * other.y - y * other.x);
     }
-    double length() const { 
-        return std::sqrt(x*x + y*y + z*z); 
-    }
     double length_squared() const { 
         return x*x + y*y + z*z; 
     }
+    
+    double length() const { 
+        return std::sqrt(length_squared()); 
+    }
+    
     Vector3 normalize() const { 
         double len = length(); 
-        return (len > 0) ? Vector3(x/len, y/len, z/len) : *this; 
+        if (len > 0) {
+            return Vector3(x/len, y/len, z/len);
+        }
+        return *this;
     }
 };
 

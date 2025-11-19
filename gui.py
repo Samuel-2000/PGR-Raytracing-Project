@@ -172,7 +172,7 @@ class ControlPanel(QWidget):
         samples_layout.addWidget(QLabel("Max Samples:"))
         self.max_samples = QSpinBox()
         self.max_samples.setRange(1, 1024)
-        self.max_samples.setValue(128)
+        self.max_samples.setValue(self.raytracer.settings["max_samples"])
         self.max_samples.valueChanged.connect(self.on_settings_changed)
         samples_layout.addWidget(self.max_samples)
         layout.addLayout(samples_layout)
@@ -182,7 +182,7 @@ class ControlPanel(QWidget):
         batch_layout.addWidget(QLabel("Samples/Batch:"))
         self.samples_batch = QSpinBox()
         self.samples_batch.setRange(1, 64)
-        self.samples_batch.setValue(4)
+        self.samples_batch.setValue(self.raytracer.settings["samples_per_batch"])
         self.samples_batch.valueChanged.connect(self.on_settings_changed)
         batch_layout.addWidget(self.samples_batch)
         layout.addLayout(batch_layout)
@@ -192,7 +192,7 @@ class ControlPanel(QWidget):
         depth_layout.addWidget(QLabel("Max Depth:"))
         self.max_depth = QSpinBox()
         self.max_depth.setRange(1, 32)
-        self.max_depth.setValue(8)
+        self.max_depth.setValue(self.raytracer.settings["max_depth"])
         self.max_depth.valueChanged.connect(self.on_settings_changed)
         depth_layout.addWidget(self.max_depth)
         layout.addLayout(depth_layout)
@@ -203,7 +203,7 @@ class ControlPanel(QWidget):
         self.exposure = QDoubleSpinBox()
         self.exposure.setRange(0.1, 5.0)
         self.exposure.setSingleStep(0.1)
-        self.exposure.setValue(1.5)
+        self.exposure.setValue(self.raytracer.settings["exposure"])
         self.exposure.valueChanged.connect(self.on_settings_changed)
         exposure_layout.addWidget(self.exposure)
         layout.addLayout(exposure_layout)
@@ -214,7 +214,7 @@ class ControlPanel(QWidget):
         self.move_speed = QDoubleSpinBox()
         self.move_speed.setRange(0.1, 2.0)
         self.move_speed.setSingleStep(0.1)
-        self.move_speed.setValue(0.5)
+        self.move_speed.setValue(self.raytracer.settings["move_speed"])
         self.move_speed.valueChanged.connect(self.on_settings_changed)
         speed_layout.addWidget(self.move_speed)
         layout.addLayout(speed_layout)
@@ -283,11 +283,14 @@ class ControlPanel(QWidget):
         return group
     
     def debounced_camera_move(self, dx, dy, dz):
-        """Debounced camera movement"""
-        self.raytracer.move_camera(dx, dy, dz)
-        self.update_camera_info()
-        self.disable_camera_buttons()
-        QTimer.singleShot(200, self.enable_camera_buttons)
+        """Debounced camera movement - FIXED VERSION"""
+        try:
+            self.raytracer.move_camera(dx, dy, dz)
+            self.update_camera_info()
+            self.disable_camera_buttons()
+            QTimer.singleShot(300, self.enable_camera_buttons)  # Longer delay
+        except Exception as e:
+            print(f"Camera move error: {e}")
     
     def disable_camera_buttons(self):
         """Disable camera buttons briefly"""
@@ -302,10 +305,15 @@ class ControlPanel(QWidget):
             btn.setEnabled(True)
     
     def update_camera_info(self):
-        """Update camera position info"""
-        # This would need access to camera position in raytracer
-        # For now, we'll just show a static message
-        pass
+        """Update camera position info - FIXED VERSION"""
+        try:
+            camera = self.raytracer.camera
+            if camera:
+                pos = camera.position
+                info = f"Camera: ({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})"
+                self.camera_info.setText(info)
+        except:
+            self.camera_info.setText("Camera: (0.0, 2.0, 5.0)")  # Fallback
 
         
     def create_object_group(self):

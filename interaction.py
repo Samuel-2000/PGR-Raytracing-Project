@@ -1,4 +1,4 @@
-# interaction.py
+# interaction.py - UPDATED VERSION
 
 import numpy as np
 import time
@@ -11,7 +11,7 @@ from denoiser import Denoiser
 from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3, Camera
 
 class RayTracerInteraction:
-    """C++ Ray Tracer with Full Interactive Controls"""
+    """C++ Ray Tracer with Full Interactive Controls - FIXED VERSION"""
     
     def __init__(self, width: int = 400, height: int = 300):
         self.width = width
@@ -25,25 +25,30 @@ class RayTracerInteraction:
         # Get camera reference
         self.camera = self.ray_tracer.get_camera()
         
+        # Initialize camera to safe position
+        self.camera.position = Vector3(0, 2, 5)  # Safer starting position
+        self.camera.target = Vector3(0, 0, -1)
+        self.camera.up = Vector3(0, 1, 0)
+        self.camera.fov = 45.0
+        
         # Rendering state
         self.is_rendering = False
         self.accumulated_image = None
         self.total_samples = 0
         self.frame_queue = Queue()
         
-        # Settings with defaults
+        # Settings with safer defaults
         self.settings = {
-            'max_samples': 128,
-            'samples_per_batch': 4,
-            'max_depth': 8,
+            'max_samples': 32,  # Reduced for faster feedback
+            'samples_per_batch': 8,  # Reduced for stability
+            'max_depth': 4,  # Reduced for stability
             'exposure': 1.5,
             'enhance_image': True,
             'show_denoisers': False,
             'selected_denoisers': ['bilateral'],
-            'update_step': 4,
             'selected_object': 1,  # Start with first interactive object
-            'move_speed': 0.5,
-            'camera_move_speed': 0.1,
+            'move_speed': 0.3,  # Slower movement
+            'camera_move_speed': 0.05,  # Slower camera movement
         }
         
         # Object manipulation state
@@ -58,54 +63,6 @@ class RayTracerInteraction:
         self.denoiser = Denoiser()
         
         print(f"✓ Initialized C++ Ray Tracer: {width}x{height}")
-
-
-
-    def select_object_by_click(self, x: float, y: float) -> bool:
-        """Select object by screen coordinates (0-1 normalized)"""
-        # Convert normalized coordinates to ray direction
-        ray_dir = self._screen_to_world_ray(x, y)
-        ray = Ray(self.camera_position, ray_dir)
-        
-        # Find closest hit object
-        closest_t = float('inf')
-        selected_obj = None
-        selected_index = -1
-        
-        for i, sphere in enumerate(self.scene.spheres):
-            rec = HitRecord()
-            if sphere.hit(ray, 0.001, 1000.0, rec):
-                if rec.t < closest_t:
-                    closest_t = rec.t
-                    selected_obj = sphere
-                    selected_index = i
-        
-        if selected_index >= 0:
-            self.settings['selected_object'] = selected_index
-            print(f"Selected object: {selected_obj.name if hasattr(selected_obj, 'name') else f'Object {selected_index}'}")
-            return True
-        return False
-    
-
-    def _screen_to_world_ray(self, x: float, y: float) -> Vector3:
-        """Convert screen coordinates to world space ray direction"""
-        # Convert from [0,1] to [-1,1] and flip Y
-        ndc_x = x * 2.0 - 1.0
-        ndc_y = (1.0 - y) * 2.0 - 1.0  # Flip Y
-        
-        aspect_ratio = self.width / self.height
-        
-        # Calculate ray direction in camera space
-        tan_fov = math.tan(math.radians(self.camera_fov / 2.0))
-        ray_dir_camera = Vector3(
-            ndc_x * aspect_ratio * tan_fov,
-            ndc_y * tan_fov,
-            -1.0  # Looking along negative Z
-        )
-        
-        # Transform to world space (simplified - assuming camera looks at -Z)
-        return ray_dir_camera.normalize()
-
 
     def create_interactive_scene(self) -> Scene:
         """Create a scene with interactive objects"""
@@ -181,87 +138,85 @@ class RayTracerInteraction:
         return None
     
     def select_object_by_click(self, x: float, y: float) -> bool:
-        """Select object by screen coordinates using C++ ray casting"""
+        """Select object by screen coordinates - FIXED VERSION"""
         try:
+            # Use C++ ray casting for object selection
             object_id = self.ray_tracer.select_object(x, y, self.width, self.height)
-            if object_id >= 0:
+            if object_id >= 0 and object_id < len(self.scene.spheres):
                 self.settings['selected_object'] = object_id
                 obj = self.get_selected_object()
                 if obj:
-                    print(f"Selected object: {obj.name}")
+                    print(f"Selected: {obj.name} (ID: {obj.object_id})")
                     return True
         except Exception as e:
             print(f"Object selection error: {e}")
         return False
 
     def move_object(self, dx: float = 0, dy: float = 0, dz: float = 0):
-        """Move selected object"""
+        """Move selected object - FIXED VERSION"""
         with self.render_lock:
             obj = self.get_selected_object()
             if obj and obj.object_id > 0:  # Don't move ground
-                speed = self.settings['move_speed'] * 0.5
+                speed = self.settings['move_speed']
                 obj.center.x += dx * speed
                 obj.center.y += dy * speed  
                 obj.center.z += dz * speed
                 
                 # Add bounds checking
-                obj.center.x = max(-10, min(10, obj.center.x))
-                obj.center.y = max(0.1, min(10, obj.center.y))
-                obj.center.z = max(-15, min(5, obj.center.z))
+                obj.center.x = max(-8, min(8, obj.center.x))
+                obj.center.y = max(0.2, min(8, obj.center.y))
+                obj.center.z = max(-8, min(2, obj.center.z))
                 
                 self.scene.build_bvh()
                 self.restart_rendering()
-
+                print(f"Moved {obj.name} to ({obj.center.x:.1f}, {obj.center.y:.1f}, {obj.center.z:.1f})")
 
     def move_camera(self, dx: float, dy: float, dz: float):
-        """Move camera in world space using C++ camera - FIXED VERSION"""
+        """Move camera in world space - FIXED VERSION"""
         with self.render_lock:
-            speed = self.settings['camera_move_speed'] * 2.0  # Increased speed
-            delta = Vector3(dx * speed, dy * speed, dz * speed)
-            self.ray_tracer.move_camera(delta)
+            speed = self.settings['camera_move_speed']
             
-            # Get updated camera position
-            camera = self.ray_tracer.get_camera()
-            print(f"Camera moved to: ({camera.position.x:.2f}, {camera.position.y:.2f}, {camera.position.z:.2f})")
+            # Calculate movement vectors based on camera orientation
+            forward = (self.camera.target - self.camera.position).normalize()
+            right = forward.cross(self.camera.up).normalize()
+            up = self.camera.up.normalize()
+            
+            # Apply movement
+            move_vector = (right * dx + up * dy + forward * dz) * speed
+            self.camera.position = self.camera.position + move_vector
+            self.camera.target = self.camera.target + move_vector
+            
             self.restart_rendering()
 
     def rotate_camera(self, dx: float, dy: float):
-        """Rotate camera around target"""
+        """Rotate camera around target - SIMPLIFIED VERSION"""
         with self.render_lock:
             # Simple rotation - adjust camera position around target
-            forward = Vector3(
-                self.camera.target.x - self.camera.position.x,
-                self.camera.target.y - self.camera.position.y, 
-                self.camera.target.z - self.camera.position.z
-            )
+            angle_x = dx * 0.5  # Reduced sensitivity
+            angle_y = dy * 0.5
             
-            # Calculate right vector
-            right = forward.cross(self.camera.up).normalize()
+            # Get vector from target to camera
+            vec = self.camera.position - self.camera.target
             
-            # Rotate around up axis (yaw)
-            yaw_angle = dx * 0.01
-            rotation_yaw = Vector3(
-                forward.x * math.cos(yaw_angle) - forward.z * math.sin(yaw_angle),
-                forward.y,
-                forward.x * math.sin(yaw_angle) + forward.z * math.cos(yaw_angle)
-            )
+            # Rotate around Y axis (horizontal)
+            cos_x = math.cos(angle_x)
+            sin_x = math.sin(angle_x)
+            new_x = vec.x * cos_x - vec.z * sin_x
+            new_z = vec.x * sin_x + vec.z * cos_x
+            vec = Vector3(new_x, vec.y, new_z)
             
-            # Rotate around right axis (pitch)
-            pitch_angle = dy * 0.01
-            rotation_pitch = Vector3(
-                rotation_yaw.x,
-                rotation_yaw.y * math.cos(pitch_angle) - rotation_yaw.z * math.sin(pitch_angle),
-                rotation_yaw.y * math.sin(pitch_angle) + rotation_yaw.z * math.cos(pitch_angle)
-            )
+            # Rotate around X axis (vertical) with limits
+            cos_y = math.cos(angle_y)
+            sin_y = math.sin(angle_y)
+            new_y = vec.y * cos_y - vec.z * sin_y
+            new_z = vec.y * sin_y + vec.z * cos_y
+            
+            # Limit vertical rotation
+            if abs(new_y) < 3.0:  # Prevent flipping
+                vec = Vector3(vec.x, new_y, new_z)
             
             # Update camera position
-            distance = forward.length()
-            new_forward = rotation_pitch.normalize()
-            self.camera.position = Vector3(
-                self.camera.target.x - new_forward.x * distance,
-                self.camera.target.y - new_forward.y * distance,
-                self.camera.target.z - new_forward.z * distance
-            )
+            self.camera.position = self.camera.target + vec
             
             self.restart_rendering()
 
@@ -270,53 +225,52 @@ class RayTracerInteraction:
         obj = self.get_selected_object()
         if obj:
             if property_name == 'albedo':
+                # For color, set all channels to the same value for simplicity
                 obj.material.albedo = Vector3(value, value, value)
-            elif property_name == 'emission':
-                current = obj.material.emission
-                obj.material.emission = Vector3(value, current.y, current.z)
-            elif hasattr(obj.material, property_name):
-                setattr(obj.material, property_name, value)
+            elif property_name == 'metallic':
+                obj.material.metallic = value
+            elif property_name == 'roughness':
+                obj.material.roughness = value
+                
             self.restart_rendering()
+            print(f"Updated {obj.name} {property_name} to {value:.2f}")
 
     def update_light_intensity(self, intensity: float):
         """Update light intensity for selected light"""
         obj = self.get_selected_object()
         if obj and hasattr(obj.material, 'emission'):
+            # Check if it's a light (has significant emission)
             emission = obj.material.emission
-            is_light = emission.x > 0 or emission.y > 0 or emission.z > 0
+            is_light = emission.x > 1.0 or emission.y > 1.0 or emission.z > 1.0
             
             if is_light:
-                current_total = emission.x + emission.y + emission.z
-                if current_total > 0:
-                    ratio_x = emission.x / current_total
-                    ratio_y = emission.y / current_total  
-                    ratio_z = emission.z / current_total
-                    
-                    total_intensity = intensity
+                # Preserve color ratios, just scale intensity
+                current_max = max(emission.x, emission.y, emission.z)
+                if current_max > 0:
+                    scale = intensity / current_max
                     obj.material.emission = Vector3(
-                        ratio_x * total_intensity,
-                        ratio_y * total_intensity,
-                        ratio_z * total_intensity
+                        emission.x * scale,
+                        emission.y * scale, 
+                        emission.z * scale
                     )
-                    print(f"Updated light intensity to {intensity}")
                     self.restart_rendering()
+                    print(f"Updated {obj.name} intensity to {intensity}")
 
     def restart_rendering(self):
-        """Restart rendering with current settings - IMPROVED VERSION"""
+        """Restart rendering with current settings - FIXED VERSION"""
         with self.render_lock:
-            if self.is_rendering:
-                self.is_rendering = False
-                # Give thread more time to stop cleanly
-                time.sleep(0.05)
+            self.is_rendering = False
+            time.sleep(0.02)  # Brief pause to ensure thread stops
             
             # Clear accumulated image
             self.accumulated_image = None
             self.total_samples = 0
             self.frame_queue = Queue()
             
-            # Force BVH rebuild to ensure consistency
+            # Force BVH rebuild
             self.scene.build_bvh()
             
+            # Start fresh
             self.start_rendering()
 
     def start_rendering(self):
@@ -325,7 +279,7 @@ class RayTracerInteraction:
             return
         
         self.is_rendering = True
-        self.accumulated_image = np.zeros((self.height, self.width, 3))
+        self.accumulated_image = np.zeros((self.height, self.width, 3), dtype=np.float32)
         self.total_samples = 0
         
         render_thread = threading.Thread(target=self._render_worker)
@@ -334,12 +288,10 @@ class RayTracerInteraction:
 
     def _render_worker(self):
         """Worker function for rendering - FIXED VERSION"""
-        # Ensure BVH is built before rendering
-        with self.render_lock:
-            self.scene.build_bvh()
-        
-        while self.is_rendering and self.total_samples < self.settings['max_samples']:
-            try:
+        try:
+            while (self.is_rendering and 
+                   self.total_samples < self.settings['max_samples']):
+                
                 start_time = time.time()
                 
                 # Render using C++ ray tracer with thread safety
@@ -354,47 +306,61 @@ class RayTracerInteraction:
                     print("Warning: Empty render result")
                     continue
                     
-                batch_image = np.array(result).reshape((self.height, self.width, 3))
+                # Convert to numpy and reshape
+                batch_image = np.array(result, dtype=np.float32).reshape(
+                    (self.height, self.width, 3)
+                )
                 render_time = time.time() - start_time
                 
-                # FIX: Proper accumulation without red fog
-                if self.accumulated_image is None:
-                    self.accumulated_image = batch_image.copy()
-                    self.total_samples = self.settings['samples_per_batch']
+                # FIXED: Proper progressive accumulation
+                batch_samples = self.settings['samples_per_batch']
+                
+                if self.total_samples == 0:
+                    # First batch
+                    self.accumulated_image = batch_image
+                    self.total_samples = batch_samples
                 else:
-                    # Proper weighted average for progressive rendering
-                    total_samples_old = self.total_samples
-                    self.total_samples += self.settings['samples_per_batch']
+                    # Progressive accumulation using running average
+                    total_old = self.total_samples
+                    total_new = self.total_samples + batch_samples
                     
-                    weight_old = total_samples_old / self.total_samples
-                    weight_new = self.settings['samples_per_batch'] / self.total_samples
-                    self.accumulated_image = self.accumulated_image * weight_old + batch_image * weight_new
+                    # Weighted average: old * (n/(n+m)) + new * (m/(n+m))
+                    weight_old = total_old / total_new
+                    weight_new = batch_samples / total_new
+                    
+                    self.accumulated_image = (
+                        self.accumulated_image * weight_old + 
+                        batch_image * weight_new
+                    )
+                    self.total_samples = total_new
                 
                 # Send frame for display
-                if (self.total_samples % self.settings['update_step'] == 0 or 
+                if (self.total_samples % self.settings['samples_per_batch'] == 0 or 
                     self.total_samples >= self.settings['max_samples']):
                     self._process_frame_for_display(render_time)
                 
-                time.sleep(0.01)  # Small delay to prevent CPU overload
+                # Small delay to prevent CPU overload
+                time.sleep(0.005)
                 
-            except Exception as e:
-                print(f"Rendering error: {e}")
-                import traceback
-                traceback.print_exc()
-                break
+        except Exception as e:
+            print(f"Rendering error: {e}")
+            import traceback
+            traceback.print_exc()
         
+        # Signal completion
         self.frame_queue.put({'done': True})
         self.is_rendering = False
 
     def _process_frame_for_display(self, render_time: float):
-        """Process frame for display with tone mapping and denoising"""
-        linear_image = np.clip(self.accumulated_image, 0, 10)
+        """Process frame for display - FIXED VERSION"""
+        if self.accumulated_image is None:
+            return
+            
+        # Apply tone mapping to prevent red fog
+        display_image = self._tone_map(self.accumulated_image, self.settings['exposure'])
         
-        # Tone mapping
-        display_image = self._tone_map(linear_image, self.settings['exposure'])
-        
-        # Enhanced version
-        enhanced_image = self._enhance_display(linear_image) if self.settings['enhance_image'] else display_image
+        # Enhanced version with contrast adjustment
+        enhanced_image = self._enhance_display(display_image) if self.settings['enhance_image'] else display_image
         
         # Denoised versions if enabled
         denoised_images = {}
@@ -406,7 +372,7 @@ class RayTracerInteraction:
                     print(f"Denoising error with {method}: {e}")
         
         frame_data = {
-            'linear': linear_image,
+            'linear': self.accumulated_image.copy(),
             'display': display_image,
             'enhanced': enhanced_image,
             'denoised': denoised_images,
@@ -417,18 +383,27 @@ class RayTracerInteraction:
         self.frame_queue.put(frame_data)
 
     def _tone_map(self, image: np.ndarray, exposure: float) -> np.ndarray:
-        """Simple Reinhard tone mapping"""
+        """Tone mapping to prevent color explosion - FIXED VERSION"""
+        # Apply exposure and clamp to prevent infinite growth
         image = image * exposure
-        return image / (1.0 + image)
+        
+        # Use Reinhard tone mapping to compress high values
+        image = image / (1.0 + image)
+        
+        # Additional clamping for safety
+        return np.clip(image, 0.0, 1.0)
 
     def _enhance_display(self, image: np.ndarray) -> np.ndarray:
-        """Contrast enhancement"""
-        p2, p98 = np.percentile(image, (2, 98))
-        if p98 > p2:
-            enhanced = np.clip((image - p2) / (p98 - p2), 0, 1)
+        """Contrast enhancement - FIXED VERSION"""
+        # Simple contrast stretch
+        min_val = np.percentile(image, 2)
+        max_val = np.percentile(image, 98)
+        
+        if max_val > min_val:
+            enhanced = (image - min_val) / (max_val - min_val)
+            return np.clip(enhanced, 0, 1)
         else:
-            enhanced = image
-        return enhanced
+            return image
 
     def stop_rendering(self):
         """Stop rendering"""
