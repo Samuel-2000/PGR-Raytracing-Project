@@ -53,6 +53,8 @@ struct Vector3 {
     }
 };
 
+
+
 struct Ray {
     Vector3 origin;
     Vector3 direction;

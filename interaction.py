@@ -5,6 +5,7 @@ import time
 import threading
 from queue import Queue
 from typing import Dict, Optional
+import math
 
 from denoiser import Denoiser
 from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3, Camera
@@ -213,12 +214,15 @@ class RayTracerInteraction:
 
 
     def move_camera(self, dx: float, dy: float, dz: float):
-        """Move camera in world space using C++ camera"""
+        """Move camera in world space using C++ camera - FIXED VERSION"""
         with self.render_lock:
-            speed = self.settings['camera_move_speed'] * 0.5
+            speed = self.settings['camera_move_speed'] * 2.0  # Increased speed
             delta = Vector3(dx * speed, dy * speed, dz * speed)
             self.ray_tracer.move_camera(delta)
-            print(f"Camera moved to: ({self.camera.position.x:.2f}, {self.camera.position.y:.2f}, {self.camera.position.z:.2f})")
+            
+            # Get updated camera position
+            camera = self.ray_tracer.get_camera()
+            print(f"Camera moved to: ({camera.position.x:.2f}, {camera.position.y:.2f}, {camera.position.z:.2f})")
             self.restart_rendering()
 
     def rotate_camera(self, dx: float, dy: float):
@@ -329,7 +333,7 @@ class RayTracerInteraction:
         render_thread.start()
 
     def _render_worker(self):
-        """Worker function for rendering - IMPROVED VERSION"""
+        """Worker function for rendering - FIXED VERSION"""
         # Ensure BVH is built before rendering
         with self.render_lock:
             self.scene.build_bvh()
@@ -353,13 +357,16 @@ class RayTracerInteraction:
                 batch_image = np.array(result).reshape((self.height, self.width, 3))
                 render_time = time.time() - start_time
                 
-                # Update accumulated image with proper weighting
-                self.total_samples += self.settings['samples_per_batch']
-                
+                # FIX: Proper accumulation without red fog
                 if self.accumulated_image is None:
                     self.accumulated_image = batch_image.copy()
+                    self.total_samples = self.settings['samples_per_batch']
                 else:
-                    weight_old = (self.total_samples - self.settings['samples_per_batch']) / self.total_samples
+                    # Proper weighted average for progressive rendering
+                    total_samples_old = self.total_samples
+                    self.total_samples += self.settings['samples_per_batch']
+                    
+                    weight_old = total_samples_old / self.total_samples
                     weight_new = self.settings['samples_per_batch'] / self.total_samples
                     self.accumulated_image = self.accumulated_image * weight_old + batch_image * weight_new
                 

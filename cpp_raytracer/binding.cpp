@@ -10,6 +10,11 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("x", &Vector3::x)
         .def_readwrite("y", &Vector3::y)
         .def_readwrite("z", &Vector3::z)
+        .def("length", &Vector3::length)  // Add this line
+        .def("length_squared", &Vector3::length_squared)  // Add this line
+        .def("dot", &Vector3::dot)
+        .def("cross", &Vector3::cross)
+        .def("normalize", &Vector3::normalize)
         .def("__repr__", [](const Vector3& v) {
             return "Vector3(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
         });
