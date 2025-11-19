@@ -4,16 +4,37 @@
 
 namespace py = pybind11;
 
+// Helper functions for operator overloading
+Vector3 vector3_add(const Vector3& a, const Vector3& b) { return a + b; }
+Vector3 vector3_sub(const Vector3& a, const Vector3& b) { return a - b; }
+Vector3 vector3_mul_scalar(const Vector3& a, double scalar) { return a * scalar; }
+Vector3 vector3_mul_vector(const Vector3& a, const Vector3& b) { return a * b; }
+Vector3 vector3_div(const Vector3& a, double scalar) { return a / scalar; }
+Vector3 vector3_neg(const Vector3& a) { return -a; }
+Vector3& vector3_iadd(Vector3& a, const Vector3& b) { return a += b; }
+Vector3& vector3_imul(Vector3& a, double scalar) { return a *= scalar; }
+
 PYBIND11_MODULE(raytracer_cpp, m) {
     py::class_<Vector3>(m, "Vector3")
         .def(py::init<double, double, double>())
         .def_readwrite("x", &Vector3::x)
         .def_readwrite("y", &Vector3::y)
         .def_readwrite("z", &Vector3::z)
-        .def("length", &Vector3::length)  // Add this line
-        .def("length_squared", &Vector3::length_squared)  // Add this line
+        // Operators
+        .def("__add__", &vector3_add)
+        .def("__sub__", &vector3_sub)
+        .def("__mul__", &vector3_mul_scalar)
+        .def("__mul__", &vector3_mul_vector)
+        .def("__rmul__", &vector3_mul_scalar)
+        .def("__truediv__", &vector3_div)
+        .def("__neg__", &vector3_neg)
+        .def("__iadd__", &vector3_iadd)
+        .def("__imul__", &vector3_imul)
+        // Methods
         .def("dot", &Vector3::dot)
         .def("cross", &Vector3::cross)
+        .def("length_squared", &Vector3::length_squared)
+        .def("length", &Vector3::length)
         .def("normalize", &Vector3::normalize)
         .def("__repr__", [](const Vector3& v) {
             return "Vector3(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
@@ -22,7 +43,8 @@ PYBIND11_MODULE(raytracer_cpp, m) {
     py::class_<Ray>(m, "Ray")
         .def(py::init<const Vector3&, const Vector3&>())
         .def_readwrite("origin", &Ray::origin)
-        .def_readwrite("direction", &Ray::direction);
+        .def_readwrite("direction", &Ray::direction)
+        .def("at", &Ray::at);
     
     py::class_<Material>(m, "Material")
         .def(py::init<>())
@@ -38,7 +60,8 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("radius", &Sphere::radius)
         .def_readwrite("material", &Sphere::material)
         .def_readwrite("object_id", &Sphere::object_id)
-        .def_readwrite("name", &Sphere::name);
+        .def_readwrite("name", &Sphere::name)
+        .def("hit", &Sphere::hit);
     
     py::class_<Camera>(m, "Camera")
         .def(py::init<>())
@@ -46,8 +69,10 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("target", &Camera::target)
         .def_readwrite("up", &Camera::up)
         .def_readwrite("fov", &Camera::fov)
+        .def_readwrite("aspect_ratio", &Camera::aspect_ratio)
         .def("get_ray", &Camera::get_ray)
-        .def("move", &Camera::move);
+        .def("move", &Camera::move)
+        .def("rotate", &Camera::rotate);
     
     py::class_<Scene>(m, "Scene")
         .def(py::init<>())
@@ -56,6 +81,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("use_bvh", &Scene::use_bvh)
         .def("add_sphere", &Scene::add_sphere)
         .def("build_bvh", &Scene::build_bvh)
+        .def("hit", &Scene::hit)
         .def("cast_ray_for_selection", &Scene::cast_ray_for_selection);
     
     py::class_<RayTracer>(m, "RayTracer")
@@ -64,5 +90,6 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("render", &RayTracer::render)
         .def("get_camera", &RayTracer::get_camera, py::return_value_policy::reference)
         .def("select_object", &RayTracer::select_object)
-        .def("move_camera", &RayTracer::move_camera);
+        .def("move_camera", &RayTracer::move_camera)
+        .def("trace_ray", &RayTracer::trace_ray);
 }
