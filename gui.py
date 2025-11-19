@@ -132,14 +132,20 @@ class ControlPanel(QWidget):
         super().__init__()
         self.raytracer = raytracer
         self.setup_ui()
+        # Initialize object info after UI is setup
+        self.update_object_info()
         
     def setup_ui(self):
-        """Setup the control panel UI"""
+        """Setup the control panel UI - UPDATED VERSION"""
         layout = QVBoxLayout()
         
         # Rendering settings
         render_group = self.create_render_group()
         layout.addWidget(render_group)
+        
+        # Camera controls - ADD THIS
+        camera_group = self.create_camera_group()
+        layout.addWidget(camera_group)
         
         # Object controls
         object_group = self.create_object_group()
@@ -215,9 +221,95 @@ class ControlPanel(QWidget):
         
         group.setLayout(layout)
         return group
+    
+
+    def create_camera_group(self):
+        """Create camera controls group"""
+        group = QGroupBox("Camera Controls")
+        layout = QVBoxLayout()
+        
+        # Camera movement buttons
+        move_layout = QVBoxLayout()
+        move_label = QLabel("Camera Movement:")
+        move_label.setStyleSheet("font-weight: bold;")
+        move_layout.addWidget(move_label)
+        
+        # Camera movement grid
+        cam_grid = QHBoxLayout()
+        
+        # Left/Right
+        cam_lr_layout = QVBoxLayout()
+        self.cam_btn_left = QPushButton("← Left")
+        self.cam_btn_right = QPushButton("Right →")
+        cam_lr_layout.addWidget(self.cam_btn_left)
+        cam_lr_layout.addWidget(self.cam_btn_right)
+        
+        # Up/Down  
+        cam_ud_layout = QVBoxLayout()
+        self.cam_btn_up = QPushButton("↑ Up")
+        self.cam_btn_down = QPushButton("Down ↓")
+        cam_ud_layout.addWidget(self.cam_btn_up)
+        cam_ud_layout.addWidget(self.cam_btn_down)
+        
+        # Forward/Backward
+        cam_fb_layout = QVBoxLayout()
+        self.cam_btn_forward = QPushButton("↗ Forward")
+        self.cam_btn_backward = QPushButton("Backward ↙")
+        cam_fb_layout.addWidget(self.cam_btn_forward)
+        cam_fb_layout.addWidget(self.cam_btn_backward)
+        
+        cam_grid.addLayout(cam_lr_layout)
+        cam_grid.addLayout(cam_ud_layout) 
+        cam_grid.addLayout(cam_fb_layout)
+        
+        move_layout.addLayout(cam_grid)
+        
+        # Camera info
+        self.camera_info = QLabel("Camera: (0.00, 2.00, 3.00)")
+        self.camera_info.setStyleSheet("color: #aaa; font-size: 10px;")
+        move_layout.addWidget(self.camera_info)
+        
+        layout.addLayout(move_layout)
+        
+        # Connect camera buttons
+        self.cam_btn_left.clicked.connect(lambda: self.debounced_camera_move(-1, 0, 0))
+        self.cam_btn_right.clicked.connect(lambda: self.debounced_camera_move(1, 0, 0))
+        self.cam_btn_up.clicked.connect(lambda: self.debounced_camera_move(0, 1, 0))
+        self.cam_btn_down.clicked.connect(lambda: self.debounced_camera_move(0, -1, 0))
+        self.cam_btn_forward.clicked.connect(lambda: self.debounced_camera_move(0, 0, -1))
+        self.cam_btn_backward.clicked.connect(lambda: self.debounced_camera_move(0, 0, 1))
+        
+        group.setLayout(layout)
+        return group
+    
+    def debounced_camera_move(self, dx, dy, dz):
+        """Debounced camera movement"""
+        self.raytracer.move_camera(dx, dy, dz)
+        self.update_camera_info()
+        self.disable_camera_buttons()
+        QTimer.singleShot(200, self.enable_camera_buttons)
+    
+    def disable_camera_buttons(self):
+        """Disable camera buttons briefly"""
+        for btn in [self.cam_btn_left, self.cam_btn_right, self.cam_btn_up,
+                   self.cam_btn_down, self.cam_btn_forward, self.cam_btn_backward]:
+            btn.setEnabled(False)
+    
+    def enable_camera_buttons(self):
+        """Re-enable camera buttons"""
+        for btn in [self.cam_btn_left, self.cam_btn_right, self.cam_btn_up,
+                   self.cam_btn_down, self.cam_btn_forward, self.cam_btn_backward]:
+            btn.setEnabled(True)
+    
+    def update_camera_info(self):
+        """Update camera position info"""
+        # This would need access to camera position in raytracer
+        # For now, we'll just show a static message
+        pass
+
         
     def create_object_group(self):
-        """Create object controls group"""
+        """Create object controls group - FIXED VERSION"""
         group = QGroupBox("Object Controls")
         layout = QVBoxLayout()
         
@@ -225,13 +317,17 @@ class ControlPanel(QWidget):
         obj_layout = QHBoxLayout()
         obj_layout.addWidget(QLabel("Object:"))
         self.object_select = QComboBox()
-        object_count = self.raytracer.get_object_count()
+        
+        # Add objects including ground
+        object_count = self.raytracer.get_object_count() + 1  # +1 for ground
         for i in range(object_count):
-            obj = self.raytracer.get_selected_object()
-            if obj and hasattr(obj, 'name'):
+            obj = self.raytracer.scene.spheres[i] if i < len(self.raytracer.scene.spheres) else None
+            if obj and hasattr(obj, 'name') and obj.name:
                 self.object_select.addItem(obj.name)
             else:
-                self.object_select.addItem(f"Object {i}")
+                name = "Ground" if i == 0 else f"Object {i}"
+                self.object_select.addItem(name)
+        
         self.object_select.currentIndexChanged.connect(self.on_object_selected)
         obj_layout.addWidget(self.object_select)
         layout.addLayout(obj_layout)
@@ -241,46 +337,69 @@ class ControlPanel(QWidget):
         self.object_info.setStyleSheet("color: #aaa; font-style: italic;")
         layout.addWidget(self.object_info)
         
-        # Movement buttons
+        # Movement buttons - FIXED VERSION
         move_layout = QVBoxLayout()
         move_label = QLabel("Movement:")
         move_label.setStyleSheet("font-weight: bold;")
         move_layout.addWidget(move_label)
         
-        # Horizontal movement
-        horz_layout = QHBoxLayout()
-        self.btn_left = QPushButton("←")
-        self.btn_right = QPushButton("→")
-        self.btn_up = QPushButton("↑")
-        self.btn_down = QPushButton("↓")
-        self.btn_forward = QPushButton("↗")
-        self.btn_backward = QPushButton("↙")
+        # Movement grid
+        move_grid = QHBoxLayout()
         
-        for btn in [self.btn_left, self.btn_right, self.btn_up, 
-                   self.btn_down, self.btn_forward, self.btn_backward]:
-            btn.setFixedSize(40, 30)
-            btn.setStyleSheet("QPushButton { background-color: #333; color: white; }"
-                            "QPushButton:hover { background-color: #444; }"
-                            "QPushButton:pressed { background-color: #555; }")
+        # Left/Right
+        lr_layout = QVBoxLayout()
+        self.btn_left = QPushButton("← Left")
+        self.btn_right = QPushButton("Right →")
+        lr_layout.addWidget(self.btn_left)
+        lr_layout.addWidget(self.btn_right)
         
-        self.btn_left.clicked.connect(lambda: self.move_object(-1, 0, 0))
-        self.btn_right.clicked.connect(lambda: self.move_object(1, 0, 0))
-        self.btn_up.clicked.connect(lambda: self.move_object(0, 1, 0))
-        self.btn_down.clicked.connect(lambda: self.move_object(0, -1, 0))
-        self.btn_forward.clicked.connect(lambda: self.move_object(0, 0, -1))
-        self.btn_backward.clicked.connect(lambda: self.move_object(0, 0, 1))
+        # Up/Down  
+        ud_layout = QVBoxLayout()
+        self.btn_up = QPushButton("↑ Up")
+        self.btn_down = QPushButton("Down ↓")
+        ud_layout.addWidget(self.btn_up)
+        ud_layout.addWidget(self.btn_down)
         
-        horz_layout.addWidget(self.btn_left)
-        horz_layout.addWidget(self.btn_right)
-        horz_layout.addWidget(self.btn_up)
-        horz_layout.addWidget(self.btn_down)
-        horz_layout.addWidget(self.btn_forward)
-        horz_layout.addWidget(self.btn_backward)
-        move_layout.addLayout(horz_layout)
+        # Forward/Backward
+        fb_layout = QVBoxLayout()
+        self.btn_forward = QPushButton("↗ Forward")
+        self.btn_backward = QPushButton("Backward ↙")
+        fb_layout.addWidget(self.btn_forward)
+        fb_layout.addWidget(self.btn_backward)
         
+        move_grid.addLayout(lr_layout)
+        move_grid.addLayout(ud_layout) 
+        move_grid.addLayout(fb_layout)
+        
+        move_layout.addLayout(move_grid)
         layout.addLayout(move_layout)
+        
+        # Connect buttons with debouncing
+        self.btn_left.clicked.connect(lambda: self.debounced_move(-1, 0, 0))
+        self.btn_right.clicked.connect(lambda: self.debounced_move(1, 0, 0))
+        self.btn_up.clicked.connect(lambda: self.debounced_move(0, 1, 0))
+        self.btn_down.clicked.connect(lambda: self.debounced_move(0, -1, 0))
+        self.btn_forward.clicked.connect(lambda: self.debounced_move(0, 0, -1))
+        self.btn_backward.clicked.connect(lambda: self.debounced_move(0, 0, 1))
+        
         group.setLayout(layout)
         return group
+    
+    def debounced_move(self, dx, dy, dz):
+        """Debounced movement to prevent rapid successive calls"""
+        self.move_object(dx, dy, dz)
+        # Disable buttons briefly to prevent spam
+        for btn in [self.btn_left, self.btn_right, self.btn_up, 
+                   self.btn_down, self.btn_forward, self.btn_backward]:
+            btn.setEnabled(False)
+        QTimer.singleShot(200, self.enable_move_buttons)  # Re-enable after 200ms
+    
+    def enable_move_buttons(self):
+        """Re-enable movement buttons"""
+        for btn in [self.btn_left, self.btn_right, self.btn_up,
+                   self.btn_down, self.btn_forward, self.btn_backward]:
+            btn.setEnabled(True)
+
         
     def create_material_group(self):
         """Create material controls group"""
@@ -317,12 +436,15 @@ class ControlPanel(QWidget):
         color_layout.addWidget(self.color_r)
         layout.addLayout(color_layout)
         
-        # Light intensity
+        # Light intensity - FIXED VERSION
         light_layout = QHBoxLayout()
         light_layout.addWidget(QLabel("Light Power:"))
-        self.light_intensity = QSpinBox()
-        self.light_intensity.setRange(1, 100)
-        self.light_intensity.setValue(15)
+        self.light_intensity = QDoubleSpinBox()  # Changed to QDoubleSpinBox
+        self.light_intensity.setRange(0.1, 100.0)  # Allow decimal values
+        self.light_intensity.setSingleStep(0.5)  # Smaller steps
+        self.light_intensity.setValue(15.0)
+        self.light_intensity.setDecimals(1)  # Allow decimal input
+        self.light_intensity.setKeyboardTracking(False)  # Don't update on every keystroke
         self.light_intensity.valueChanged.connect(self.on_light_intensity_changed)
         light_layout.addWidget(self.light_intensity)
         layout.addLayout(light_layout)
@@ -390,17 +512,25 @@ class ControlPanel(QWidget):
             self.object_info.setText(f"Selected: {name}")
             
     def update_material_sliders(self):
-        """Update material sliders to match selected object"""
+        """Update material sliders to match selected object - FIXED VERSION"""
         obj = self.raytracer.get_selected_object()
         if obj:
             mat = obj.material
             self.metallic.setValue(int(mat.metallic * 100))
             self.roughness.setValue(int(mat.roughness * 100))
-            self.color_r.setValue(int(mat.albedo.x * 100))
             
-            # Update light intensity if it's a light
-            if mat.emission.x > 0:
-                self.light_intensity.setValue(int(mat.emission.x))
+            # For color, use average of RGB for the slider
+            avg_color = (mat.albedo.x + mat.albedo.y + mat.albedo.z) / 3.0
+            self.color_r.setValue(int(avg_color * 100))
+            
+            # Update light intensity if it's a light (has emission)
+            if hasattr(mat, 'emission') and mat.emission.length() > 0:
+                # Use average emission for intensity
+                avg_emission = (mat.emission.x + mat.emission.y + mat.emission.z) / 3.0
+                self.light_intensity.setValue(avg_emission)
+                self.light_intensity.setEnabled(True)
+            else:
+                self.light_intensity.setEnabled(False)
                 
     def move_object(self, dx, dy, dz):
         """Move selected object"""
@@ -688,19 +818,32 @@ class GUI(QMainWindow):
         self.raytracer.settings.update(settings)
         self.raytracer.restart_rendering()
         
-    def on_mouse_drag(self, dx, dy):
-        """Handle mouse dragging for object movement"""
-        if self.raytracer.dragging:
-            speed = 2.0  # Increased sensitivity for mouse dragging
-            self.raytracer.move_object(dx * speed, -dy * speed, 0)
-            
     def on_mouse_press(self, x, y):
-        """Handle mouse press"""
-        self.raytracer.dragging = True
-        
+        """Handle mouse press - UPDATED VERSION"""
+        # Try object selection first
+        if self.raytracer.select_object_by_click(x, y):
+            # Update control panel to reflect new selection
+            self.control_panel.object_select.setCurrentIndex(self.raytracer.settings['selected_object'])
+            self.control_panel.update_object_info()
+            self.control_panel.update_material_sliders()
+        else:
+            # If no object selected, start camera dragging
+            self.raytracer.camera_dragging = True
+    
+    def on_mouse_drag(self, dx, dy):
+        """Handle mouse dragging - UPDATED VERSION"""
+        if self.raytracer.dragging:
+            # Object dragging
+            speed = 2.0
+            self.raytracer.move_object(dx * speed, -dy * speed, 0)
+        elif self.raytracer.camera_dragging:
+            # Camera rotation
+            self.raytracer.rotate_camera(dx, -dy)
+            
     def on_mouse_release(self):
-        """Handle mouse release"""
+        """Handle mouse release - UPDATED VERSION"""
         self.raytracer.dragging = False
+        self.raytracer.camera_dragging = False
         
     def keyPressEvent(self, event):
         """Handle keyboard input"""

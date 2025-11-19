@@ -1,17 +1,16 @@
 # interaction.py
 
 import numpy as np
-
 import time
 import threading
 from queue import Queue
 from typing import Dict, Optional
 
 from denoiser import Denoiser
-from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3
+from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3, Camera
 
 class RayTracerInteraction:
-    """C++ Only Ray Tracer with Interactive Controls"""
+    """C++ Ray Tracer with Full Interactive Controls"""
     
     def __init__(self, width: int = 400, height: int = 300):
         self.width = width
@@ -21,6 +20,9 @@ class RayTracerInteraction:
         self.ray_tracer = RayTracer()
         self.scene = self.create_interactive_scene()
         self.ray_tracer.set_scene(self.scene)
+        
+        # Get camera reference
+        self.camera = self.ray_tracer.get_camera()
         
         # Rendering state
         self.is_rendering = False
@@ -38,18 +40,71 @@ class RayTracerInteraction:
             'show_denoisers': False,
             'selected_denoisers': ['bilateral'],
             'update_step': 4,
-            'selected_object': 0,
+            'selected_object': 1,  # Start with first interactive object
             'move_speed': 0.5,
+            'camera_move_speed': 0.1,
         }
         
         # Object manipulation state
         self.dragging = False
-        self.drag_start = None
+        self.camera_dragging = False
+        self.last_mouse_pos = None
+        
+        # Thread safety
+        self.render_lock = threading.Lock()
         
         # Denoiser
         self.denoiser = Denoiser()
         
         print(f"✓ Initialized C++ Ray Tracer: {width}x{height}")
+
+
+
+    def select_object_by_click(self, x: float, y: float) -> bool:
+        """Select object by screen coordinates (0-1 normalized)"""
+        # Convert normalized coordinates to ray direction
+        ray_dir = self._screen_to_world_ray(x, y)
+        ray = Ray(self.camera_position, ray_dir)
+        
+        # Find closest hit object
+        closest_t = float('inf')
+        selected_obj = None
+        selected_index = -1
+        
+        for i, sphere in enumerate(self.scene.spheres):
+            rec = HitRecord()
+            if sphere.hit(ray, 0.001, 1000.0, rec):
+                if rec.t < closest_t:
+                    closest_t = rec.t
+                    selected_obj = sphere
+                    selected_index = i
+        
+        if selected_index >= 0:
+            self.settings['selected_object'] = selected_index
+            print(f"Selected object: {selected_obj.name if hasattr(selected_obj, 'name') else f'Object {selected_index}'}")
+            return True
+        return False
+    
+
+    def _screen_to_world_ray(self, x: float, y: float) -> Vector3:
+        """Convert screen coordinates to world space ray direction"""
+        # Convert from [0,1] to [-1,1] and flip Y
+        ndc_x = x * 2.0 - 1.0
+        ndc_y = (1.0 - y) * 2.0 - 1.0  # Flip Y
+        
+        aspect_ratio = self.width / self.height
+        
+        # Calculate ray direction in camera space
+        tan_fov = math.tan(math.radians(self.camera_fov / 2.0))
+        ray_dir_camera = Vector3(
+            ndc_x * aspect_ratio * tan_fov,
+            ndc_y * tan_fov,
+            -1.0  # Looking along negative Z
+        )
+        
+        # Transform to world space (simplified - assuming camera looks at -Z)
+        return ray_dir_camera.normalize()
+
 
     def create_interactive_scene(self) -> Scene:
         """Create a scene with interactive objects"""
@@ -64,6 +119,7 @@ class RayTracerInteraction:
         ground.radius = 100.0
         ground.material = ground_material
         ground.object_id = 0
+        ground.name = "Ground"
         scene.add_sphere(ground)
         
         # Interactive objects
@@ -118,20 +174,91 @@ class RayTracerInteraction:
 
     def get_selected_object(self) -> Optional[Sphere]:
         """Get currently selected object"""
-        idx = self.settings['selected_object'] + 1  # +1 to skip ground
-        if 0 < idx < len(self.scene.spheres):
+        idx = self.settings['selected_object']
+        if 0 <= idx < len(self.scene.spheres):
             return self.scene.spheres[idx]
         return None
+    
+    def select_object_by_click(self, x: float, y: float) -> bool:
+        """Select object by screen coordinates using C++ ray casting"""
+        try:
+            object_id = self.ray_tracer.select_object(x, y, self.width, self.height)
+            if object_id >= 0:
+                self.settings['selected_object'] = object_id
+                obj = self.get_selected_object()
+                if obj:
+                    print(f"Selected object: {obj.name}")
+                    return True
+        except Exception as e:
+            print(f"Object selection error: {e}")
+        return False
 
     def move_object(self, dx: float = 0, dy: float = 0, dz: float = 0):
         """Move selected object"""
-        obj = self.get_selected_object()
-        if obj:
-            speed = self.settings['move_speed']
-            obj.center.x += dx * speed
-            obj.center.y += dy * speed
-            obj.center.z += dz * speed
-            self.scene.build_bvh()
+        with self.render_lock:
+            obj = self.get_selected_object()
+            if obj and obj.object_id > 0:  # Don't move ground
+                speed = self.settings['move_speed'] * 0.5
+                obj.center.x += dx * speed
+                obj.center.y += dy * speed  
+                obj.center.z += dz * speed
+                
+                # Add bounds checking
+                obj.center.x = max(-10, min(10, obj.center.x))
+                obj.center.y = max(0.1, min(10, obj.center.y))
+                obj.center.z = max(-15, min(5, obj.center.z))
+                
+                self.scene.build_bvh()
+                self.restart_rendering()
+
+
+    def move_camera(self, dx: float, dy: float, dz: float):
+        """Move camera in world space using C++ camera"""
+        with self.render_lock:
+            speed = self.settings['camera_move_speed'] * 0.5
+            delta = Vector3(dx * speed, dy * speed, dz * speed)
+            self.ray_tracer.move_camera(delta)
+            print(f"Camera moved to: ({self.camera.position.x:.2f}, {self.camera.position.y:.2f}, {self.camera.position.z:.2f})")
+            self.restart_rendering()
+
+    def rotate_camera(self, dx: float, dy: float):
+        """Rotate camera around target"""
+        with self.render_lock:
+            # Simple rotation - adjust camera position around target
+            forward = Vector3(
+                self.camera.target.x - self.camera.position.x,
+                self.camera.target.y - self.camera.position.y, 
+                self.camera.target.z - self.camera.position.z
+            )
+            
+            # Calculate right vector
+            right = forward.cross(self.camera.up).normalize()
+            
+            # Rotate around up axis (yaw)
+            yaw_angle = dx * 0.01
+            rotation_yaw = Vector3(
+                forward.x * math.cos(yaw_angle) - forward.z * math.sin(yaw_angle),
+                forward.y,
+                forward.x * math.sin(yaw_angle) + forward.z * math.cos(yaw_angle)
+            )
+            
+            # Rotate around right axis (pitch)
+            pitch_angle = dy * 0.01
+            rotation_pitch = Vector3(
+                rotation_yaw.x,
+                rotation_yaw.y * math.cos(pitch_angle) - rotation_yaw.z * math.sin(pitch_angle),
+                rotation_yaw.y * math.sin(pitch_angle) + rotation_yaw.z * math.cos(pitch_angle)
+            )
+            
+            # Update camera position
+            distance = forward.length()
+            new_forward = rotation_pitch.normalize()
+            self.camera.position = Vector3(
+                self.camera.target.x - new_forward.x * distance,
+                self.camera.target.y - new_forward.y * distance,
+                self.camera.target.z - new_forward.z * distance
+            )
+            
             self.restart_rendering()
 
     def update_object_material(self, property_name: str, value: float):
@@ -139,8 +266,7 @@ class RayTracerInteraction:
         obj = self.get_selected_object()
         if obj:
             if property_name == 'albedo':
-                current = obj.material.albedo
-                obj.material.albedo = Vector3(value, current.y, current.z)
+                obj.material.albedo = Vector3(value, value, value)
             elif property_name == 'emission':
                 current = obj.material.emission
                 obj.material.emission = Vector3(value, current.y, current.z)
@@ -151,26 +277,43 @@ class RayTracerInteraction:
     def update_light_intensity(self, intensity: float):
         """Update light intensity for selected light"""
         obj = self.get_selected_object()
-        if obj and obj.material.emission.x > 0:  # Check if it's a light
-            scale = intensity / max(obj.material.emission.x, 1.0)
-            current = obj.material.emission
-            obj.material.emission = Vector3(
-                current.x * scale,
-                current.y * scale, 
-                current.z * scale
-            )
-            self.restart_rendering()
+        if obj and hasattr(obj.material, 'emission'):
+            emission = obj.material.emission
+            is_light = emission.x > 0 or emission.y > 0 or emission.z > 0
+            
+            if is_light:
+                current_total = emission.x + emission.y + emission.z
+                if current_total > 0:
+                    ratio_x = emission.x / current_total
+                    ratio_y = emission.y / current_total  
+                    ratio_z = emission.z / current_total
+                    
+                    total_intensity = intensity
+                    obj.material.emission = Vector3(
+                        ratio_x * total_intensity,
+                        ratio_y * total_intensity,
+                        ratio_z * total_intensity
+                    )
+                    print(f"Updated light intensity to {intensity}")
+                    self.restart_rendering()
 
     def restart_rendering(self):
-        """Restart rendering with current settings"""
-        if self.is_rendering:
-            self.is_rendering = False
-            time.sleep(0.1)
-        
-        self.accumulated_image = None
-        self.total_samples = 0
-        self.frame_queue = Queue()
-        self.start_rendering()
+        """Restart rendering with current settings - IMPROVED VERSION"""
+        with self.render_lock:
+            if self.is_rendering:
+                self.is_rendering = False
+                # Give thread more time to stop cleanly
+                time.sleep(0.05)
+            
+            # Clear accumulated image
+            self.accumulated_image = None
+            self.total_samples = 0
+            self.frame_queue = Queue()
+            
+            # Force BVH rebuild to ensure consistency
+            self.scene.build_bvh()
+            
+            self.start_rendering()
 
     def start_rendering(self):
         """Start progressive rendering"""
@@ -186,37 +329,46 @@ class RayTracerInteraction:
         render_thread.start()
 
     def _render_worker(self):
-        """Worker function for rendering"""
+        """Worker function for rendering - IMPROVED VERSION"""
+        # Ensure BVH is built before rendering
+        with self.render_lock:
+            self.scene.build_bvh()
+        
         while self.is_rendering and self.total_samples < self.settings['max_samples']:
             try:
                 start_time = time.time()
                 
-                # Render using C++ ray tracer
-                result = self.ray_tracer.render(
-                    self.width, self.height, 
-                    self.settings['samples_per_batch'], 
-                    self.settings['max_depth']
-                )
-                batch_image = np.array(result).reshape((self.height, self.width, 3))
+                # Render using C++ ray tracer with thread safety
+                with self.render_lock:
+                    result = self.ray_tracer.render(
+                        self.width, self.height, 
+                        self.settings['samples_per_batch'], 
+                        self.settings['max_depth']
+                    )
                 
+                if result is None or len(result) == 0:
+                    print("Warning: Empty render result")
+                    continue
+                    
+                batch_image = np.array(result).reshape((self.height, self.width, 3))
                 render_time = time.time() - start_time
                 
-                # Update accumulated image
+                # Update accumulated image with proper weighting
                 self.total_samples += self.settings['samples_per_batch']
                 
-                if self.total_samples == self.settings['samples_per_batch']:
-                    self.accumulated_image = batch_image
+                if self.accumulated_image is None:
+                    self.accumulated_image = batch_image.copy()
                 else:
                     weight_old = (self.total_samples - self.settings['samples_per_batch']) / self.total_samples
                     weight_new = self.settings['samples_per_batch'] / self.total_samples
                     self.accumulated_image = self.accumulated_image * weight_old + batch_image * weight_new
                 
-                # Send frame if we've reached the update step
+                # Send frame for display
                 if (self.total_samples % self.settings['update_step'] == 0 or 
                     self.total_samples >= self.settings['max_samples']):
                     self._process_frame_for_display(render_time)
                 
-                time.sleep(0.01)
+                time.sleep(0.01)  # Small delay to prevent CPU overload
                 
             except Exception as e:
                 print(f"Rendering error: {e}")

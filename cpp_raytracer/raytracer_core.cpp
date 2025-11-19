@@ -71,6 +71,20 @@ bool Scene::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) cons
     return hit_anything;
 }
 
+int Scene::cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const {
+    HitRecord rec;
+    int selected_id = -1;
+    double closest_t = t_max;
+
+    for (const auto& sphere : spheres) {
+        if (sphere.hit(ray, t_min, closest_t, rec)) {
+            closest_t = rec.t;
+            selected_id = sphere.object_id;
+        }
+    }
+    return selected_id;
+}
+
 RayTracer::RayTracer() : gen(std::random_device{}()), dis(0.0, 1.0) {}
 
 RayTracer::~RayTracer() {}
@@ -152,17 +166,26 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
     return scene.background_color;
 }
 
+int RayTracer::select_object(double x, double y, int width, int height) {
+    // Convert screen coordinates to ray
+    Ray ray = camera.get_ray(x, y);
+    return scene.cast_ray_for_selection(ray, 0.001, 1000.0);
+}
+
+void RayTracer::move_camera(const Vector3& delta) {
+    camera.move(delta);
+}
+
 std::vector<double> RayTracer::render(int width, int height, int samples_per_pixel, int max_depth) {
     std::vector<double> image_data(width * height * 3);
+    camera.aspect_ratio = static_cast<double>(width) / height;
     
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    // Simple parallelization without collapse for better compatibility
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
     for (int j = 0; j < height; ++j) {
-        // Create local random number generator for each thread
         std::mt19937 local_gen(gen() + j);
         std::uniform_real_distribution<double> local_dis(0.0, 1.0);
         
@@ -173,12 +196,7 @@ std::vector<double> RayTracer::render(int width, int height, int samples_per_pix
                 double u = (double(i) + local_dis(local_gen)) / double(width);
                 double v = (double(j) + local_dis(local_gen)) / double(height);
                 
-                // Flip the v coordinate to fix upside-down image
-                // Original: v goes from 0 (top) to 1 (bottom)
-                // Fixed: v goes from 0 (bottom) to 1 (top)
-                double flipped_v = 1.0 - v;
-                
-                Ray ray(Vector3(0, 0, 0), Vector3(u - 0.5, flipped_v - 0.5, -1.0));
+                Ray ray = camera.get_ray(u, v);
                 pixel_color = pixel_color + trace_ray(ray, max_depth, max_depth);
             }
             

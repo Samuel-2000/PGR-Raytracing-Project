@@ -14,6 +14,11 @@ PYBIND11_MODULE(raytracer_cpp, m) {
             return "Vector3(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
         });
     
+    py::class_<Ray>(m, "Ray")
+        .def(py::init<const Vector3&, const Vector3&>())
+        .def_readwrite("origin", &Ray::origin)
+        .def_readwrite("direction", &Ray::direction);
+    
     py::class_<Material>(m, "Material")
         .def(py::init<>())
         .def_readwrite("albedo", &Material::albedo)
@@ -30,16 +35,29 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("object_id", &Sphere::object_id)
         .def_readwrite("name", &Sphere::name);
     
+    py::class_<Camera>(m, "Camera")
+        .def(py::init<>())
+        .def_readwrite("position", &Camera::position)
+        .def_readwrite("target", &Camera::target)
+        .def_readwrite("up", &Camera::up)
+        .def_readwrite("fov", &Camera::fov)
+        .def("get_ray", &Camera::get_ray)
+        .def("move", &Camera::move);
+    
     py::class_<Scene>(m, "Scene")
         .def(py::init<>())
         .def_readwrite("spheres", &Scene::spheres)
         .def_readwrite("background_color", &Scene::background_color)
         .def_readwrite("use_bvh", &Scene::use_bvh)
         .def("add_sphere", &Scene::add_sphere)
-        .def("build_bvh", &Scene::build_bvh);
+        .def("build_bvh", &Scene::build_bvh)
+        .def("cast_ray_for_selection", &Scene::cast_ray_for_selection);
     
     py::class_<RayTracer>(m, "RayTracer")
         .def(py::init<>())
         .def("set_scene", &RayTracer::set_scene)
-        .def("render", &RayTracer::render);
+        .def("render", &RayTracer::render)
+        .def("get_camera", &RayTracer::get_camera, py::return_value_policy::reference)
+        .def("select_object", &RayTracer::select_object)
+        .def("move_camera", &RayTracer::move_camera);
 }
