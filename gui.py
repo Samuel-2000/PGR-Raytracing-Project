@@ -524,21 +524,36 @@ class ControlPanel(QWidget):
         obj = self.raytracer.get_selected_object()
         if obj:
             mat = obj.material
+            
+            # Block signals temporarily to prevent recursive updates
+            self.metallic.blockSignals(True)
+            self.roughness.blockSignals(True)
+            self.color_r.blockSignals(True)
+            self.light_intensity.blockSignals(True)
+            
+            # Update sliders
             self.metallic.setValue(int(mat.metallic * 100))
             self.roughness.setValue(int(mat.roughness * 100))
             
             # For color, use average of RGB for the slider
-            avg_color = (mat.albedo.x + mat.albedo.y + mat.albedo.z) / 3.0
-            self.color_r.setValue(int(avg_color * 100))
+            if hasattr(mat.albedo, 'x'):
+                avg_color = (mat.albedo.x + mat.albedo.y + mat.albedo.z) / 3.0
+                self.color_r.setValue(int(avg_color * 100))
             
-            # Update light intensity if it's a light (has emission)
-            if hasattr(mat, 'emission') and mat.emission.length() > 0:
-                # Use average emission for intensity
-                avg_emission = (mat.emission.x + mat.emission.y + mat.emission.z) / 3.0
+            # Update light intensity if it's a light
+            if hasattr(mat, 'emission') and hasattr(mat.emission, 'x'):
+                emission = mat.emission
+                avg_emission = (emission.x + emission.y + emission.z) / 3.0
                 self.light_intensity.setValue(avg_emission)
-                self.light_intensity.setEnabled(True)
+                self.light_intensity.setEnabled(avg_emission > 0.1)
             else:
                 self.light_intensity.setEnabled(False)
+                
+            # Re-enable signals
+            self.metallic.blockSignals(False)
+            self.roughness.blockSignals(False)
+            self.color_r.blockSignals(False)
+            self.light_intensity.blockSignals(False)
                 
     def move_object(self, dx, dy, dz):
         """Move selected object"""
