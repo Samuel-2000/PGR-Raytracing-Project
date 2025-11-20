@@ -22,7 +22,7 @@ public:
     AABB box;
     BVHNode* left;
     BVHNode* right;
-    Sphere sphere;
+    std::vector<Sphere> spheres;  // CHANGED: Store multiple spheres
     bool is_leaf;
     
     BVHNode();

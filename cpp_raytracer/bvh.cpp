@@ -3,9 +3,9 @@
 
 bool AABB::hit(const Ray& ray, double tmin, double tmax) const {
     for (int a = 0; a < 3; a++) {
-        double invD = 1.0 / ray.direction.x;
-        double t0 = (min.x - ray.origin.x) * invD;
-        double t1 = (max.x - ray.origin.x) * invD;
+        double invD = 1.0 / ray.direction[a];  // FIXED: Use array indexing
+        double t0 = (min[a] - ray.origin[a]) * invD;
+        double t1 = (max[a] - ray.origin[a]) * invD;
         if (invD < 0.0) {
             std::swap(t0, t1);
         }
@@ -50,9 +50,22 @@ bool BVHNode::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) co
     }
     
     if (is_leaf) {
-        return sphere.hit(ray, t_min, t_max, rec);
+        // Check all spheres in this leaf node
+        bool hit_anything = false;
+        HitRecord temp_rec;
+        double closest_so_far = t_max;
+
+        for (const auto& sphere : spheres) {
+            if (sphere.hit(ray, t_min, closest_so_far, temp_rec)) {
+                hit_anything = true;
+                closest_so_far = temp_rec.t;
+                rec = temp_rec;
+            }
+        }
+        return hit_anything;
     }
     
+    // Internal node - check children
     HitRecord left_rec, right_rec;
     bool hit_left = (left != nullptr) && left->hit(ray, t_min, t_max, left_rec);
     bool hit_right = (right != nullptr) && right->hit(ray, t_min, t_max, right_rec);
@@ -90,33 +103,27 @@ bool BVH::box_compare(const Sphere& a, const Sphere& b, int axis) {
 
 BVHNode* BVH::build_tree(std::vector<Sphere>& spheres, size_t start, size_t end, int depth) {
     if (start >= end) {
-        return nullptr; // No spheres in this range
+        return nullptr;
     }
     
     BVHNode* node = new BVHNode();
     size_t span = end - start;
     
     // For small numbers of spheres, create a leaf node containing all of them
-    if (span <= 2) {
-        // Calculate bounding box for all spheres in this leaf
-        AABB box = sphere_bounding_box(spheres[start]);
-        for (size_t i = start + 1; i < end; i++) {
-            box = AABB::surrounding_box(box, sphere_bounding_box(spheres[i]));
+    if (span <= 4) {  // Increased threshold for better performance
+        // Store all spheres in this leaf
+        for (size_t i = start; i < end; i++) {
+            node->spheres.push_back(spheres[i]);
         }
-        node->box = box;
         
-        // Store all spheres in this leaf (you'll need to modify BVHNode structure)
-        // For now, we'll handle the single sphere case
-        if (span == 1) {
-            node->sphere = spheres[start];
-            node->is_leaf = true;
-        } else {
-            // For two spheres, create two child leaf nodes
-            node->left = build_tree(spheres, start, start + 1, depth + 1);
-            node->right = build_tree(spheres, start + 1, end, depth + 1);
-            node->box = AABB::surrounding_box(node->left->box, node->right->box);
-            node->is_leaf = false;
+        // Calculate bounding box for all spheres in this leaf
+        if (!node->spheres.empty()) {
+            node->box = sphere_bounding_box(node->spheres[0]);
+            for (size_t i = 1; i < node->spheres.size(); i++) {
+                node->box = AABB::surrounding_box(node->box, sphere_bounding_box(node->spheres[i]));
+            }
         }
+        node->is_leaf = true;
         return node;
     }
     
@@ -129,8 +136,9 @@ BVHNode* BVH::build_tree(std::vector<Sphere>& spheres, size_t start, size_t end,
     
     // Choose split axis based on largest extent
     Vector3 extent = total_box.max - total_box.min;
-    int axis = (extent.x > extent.y && extent.x > extent.z) ? 0 : 
-               (extent.y > extent.z) ? 1 : 2;
+    int axis = 0;
+    if (extent.y > extent.x) axis = 1;
+    if (extent.z > extent.y && extent.z > extent.x) axis = 2;
     
     // Sort only the portion we're working with
     auto comparator = [axis, this](const Sphere& a, const Sphere& b) {
@@ -145,18 +153,6 @@ BVHNode* BVH::build_tree(std::vector<Sphere>& spheres, size_t start, size_t end,
     node->left = build_tree(spheres, start, mid, depth + 1);
     node->right = build_tree(spheres, mid, end, depth + 1);
     node->is_leaf = false;
-    
-    // Handle case where one child might be null
-    if (node->left == nullptr) {
-        BVHNode* temp = node->right;
-        delete node;
-        return temp;
-    }
-    if (node->right == nullptr) {
-        BVHNode* temp = node->left;
-        delete node;
-        return temp;
-    }
     
     return node;
 }
@@ -174,6 +170,7 @@ void BVH::build(const std::vector<Sphere>& spheres) {
     
     std::vector<Sphere> mutable_spheres = spheres;
     root = build_tree(mutable_spheres, 0, mutable_spheres.size());
+    // todo print
 }
 
 bool BVH::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const {

@@ -7,6 +7,19 @@ struct Vector3 {
     double x, y, z;
     Vector3(double x = 0, double y = 0, double z = 0) : x(x), y(y), z(z) {}
     
+    // Add array access operators
+    double operator[](int i) const {
+        if (i == 0) return x;
+        if (i == 1) return y;
+        return z;
+    }
+    
+    double& operator[](int i) {
+        if (i == 0) return x;
+        if (i == 1) return y;
+        return z;
+    }
+    
     Vector3 operator+(const Vector3& other) const { 
         return Vector3(x + other.x, y + other.y, z + other.z); 
     }
