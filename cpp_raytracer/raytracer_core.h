@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include <random>
+#include <string>
 
 struct Vector3 {
     double x, y, z;
@@ -192,14 +193,14 @@ public:
     bool use_bvh;
     bool debug_mode;
     
-    Scene();
+    Scene();  // Default constructor
+    Scene(const Scene& other);  // Copy constructor
+    Scene& operator=(const Scene& other);  // Assignment operator
     ~Scene();
     
     void add_sphere(const Sphere& sphere);
     void build_bvh();
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
-    
-    // New method for object selection
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
 };
 

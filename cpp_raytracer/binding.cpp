@@ -86,11 +86,11 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("spheres", &Scene::spheres)
         .def_readwrite("background_color", &Scene::background_color)
         .def_readwrite("use_bvh", &Scene::use_bvh)
+        .def_readwrite("debug_mode", &Scene::debug_mode)
         .def("add_sphere", &Scene::add_sphere)
         .def("build_bvh", &Scene::build_bvh)
         .def("hit", &Scene::hit)
         .def("cast_ray_for_selection", &Scene::cast_ray_for_selection);
-        .def_readwrite("debug_mode", &Scene::debug_mode)
     
     py::class_<RayTracer>(m, "RayTracer")
         .def(py::init<>())
@@ -99,7 +99,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("get_camera", &RayTracer::get_camera, py::return_value_policy::reference)
         .def("select_object", &RayTracer::select_object)
         .def("move_camera", &RayTracer::move_camera)
-        .def("trace_ray", &RayTracer::trace_ray);
+        .def("trace_ray", &RayTracer::trace_ray)
         .def("set_debug_mode", &RayTracer::set_debug_mode)
-        .def("get_debug_info", &RayTracer::get_debug_info)
+        .def("get_debug_info", &RayTracer::get_debug_info);
 }

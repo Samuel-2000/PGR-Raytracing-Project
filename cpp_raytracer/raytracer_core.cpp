@@ -35,6 +35,34 @@ bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) con
 
 Scene::Scene() : background_color(0.1, 0.1, 0.1), bvh(nullptr), use_bvh(true), debug_mode(false) {}
 
+Scene::Scene(const Scene& other) 
+    : spheres(other.spheres),
+      background_color(other.background_color),
+      bvh(nullptr),  // CRITICAL: Don't copy the BVH pointer!
+      use_bvh(other.use_bvh),
+      debug_mode(other.debug_mode) {
+    // We don't copy the BVH - it will be rebuilt if needed
+}
+
+// Scene assignment operator
+Scene& Scene::operator=(const Scene& other) {
+    if (this != &other) {
+        spheres = other.spheres;
+        background_color = other.background_color;
+        use_bvh = other.use_bvh;
+        debug_mode = other.debug_mode;
+        
+        // Delete current BVH if it exists
+        if (bvh) {
+            delete bvh;
+        }
+        // Don't copy other.bvh - set to nullptr
+        bvh = nullptr;
+    }
+    return *this;
+}
+
+
 Scene::~Scene() {
     delete bvh;
 }
@@ -136,8 +164,14 @@ RayTracer::RayTracer() : gen(std::random_device{}()), dis(0.0, 1.0) {}
 
 RayTracer::~RayTracer() {}
 
+// Also update RayTracer::set_scene method:
 void RayTracer::set_scene(const Scene& new_scene) {
-    scene = new_scene;
+    scene = new_scene;  // This uses our new copy constructor/assignment
+    
+    // Rebuild BVH for the new scene
+    if (scene.use_bvh) {
+        scene.build_bvh();
+    }
 }
 
 Vector3 RayTracer::random_in_unit_sphere() {

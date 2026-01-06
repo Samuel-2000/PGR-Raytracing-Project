@@ -48,7 +48,7 @@ class Matrix3:
 class RayTracerInteraction:
     """C++ Ray Tracer with Full Interactive Controls"""
     
-    def __init__(self, width: int = 400, height: int = 300, debug_mode: bool = False):
+    def __init__(self, width: int = 400, height: int = 300, debug_mode: bool = True):
         self.width = width
         self.height = height
         
@@ -217,14 +217,14 @@ class RayTracerInteraction:
                 obj.center.z = max(-8, min(2, obj.center.z))
                 
                 if self.scene.debug_mode:
-                    print(f"\n[DEBUG] Moving {obj.name} to ({obj.center.x:.2f}, {obj.center.y:.2f}, {obj.center.z:.2f})")
-                    print(f"[DEBUG] Rebuilding BVH...")
+                    print(f"\n[DEBUG] Moving {obj.name} to ({obj.center.x:.1f}, {obj.center.y:.1f}, {obj.center.z:.1f})")
+                    print(f"[DEBUG] Updating RayTracer scene...")
                 
-                self.scene.build_bvh()
+                # Update the RayTracer's scene copy (will rebuild BVH in C++)
+                self.ray_tracer.set_scene(self.scene)
                 
                 if self.scene.debug_mode:
-                    debug_info = self.ray_tracer.get_debug_info()
-                    print(f"[DEBUG] BVH rebuild complete. Stats: {debug_info.get_stats()}")
+                    print(f"[DEBUG] Scene updated and BVH rebuilt")
                 
                 self.restart_rendering()
 
