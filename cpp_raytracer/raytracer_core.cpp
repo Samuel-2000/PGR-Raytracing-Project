@@ -33,7 +33,7 @@ bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) con
     return true;
 }
 
-Scene::Scene() : background_color(0.1, 0.1, 0.1), bvh(nullptr), use_bvh(true) {}
+Scene::Scene() : background_color(0.1, 0.1, 0.1), bvh(nullptr), use_bvh(true), debug_mode(false) {}
 
 Scene::~Scene() {
     delete bvh;
@@ -41,22 +41,49 @@ Scene::~Scene() {
 
 void Scene::add_sphere(const Sphere& sphere) {
     spheres.push_back(sphere);
+    if (debug_mode) {
+        std::cout << "[Scene] Added sphere: " << sphere.name 
+                  << " id=" << sphere.object_id 
+                  << " pos=(" << sphere.center.x << "," << sphere.center.y << "," << sphere.center.z 
+                  << ") radius=" << sphere.radius << std::endl;
+    }
 }
 
+
 void Scene::build_bvh() {
+    if (debug_mode) {
+        std::cout << "\n[Scene] Building BVH with " << spheres.size() << " spheres:" << std::endl;
+        for (size_t i = 0; i < spheres.size(); i++) {
+            const auto& s = spheres[i];
+            std::cout << "  [" << i << "] " << s.name 
+                      << " id=" << s.object_id
+                      << " pos=(" << s.center.x << "," << s.center.y << "," << s.center.z << ")" << std::endl;
+        }
+    }
+    
     if (bvh != nullptr) {
         delete bvh;
     }
     bvh = new BVH();
-    bvh->build(spheres);
+    bvh->build(spheres, debug_mode);
 }
 
+// In Scene::hit method
 bool Scene::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const {
     if (use_bvh && bvh != nullptr) {
-        return bvh->hit(ray, t_min, t_max, rec);
+        bool hit = bvh->hit(ray, t_min, t_max, rec, spheres);
+        if (debug_mode && hit) {
+            std::cout << "[Scene::hit] BVH hit: object_id=" << rec.object_id 
+                      << " t=" << rec.t << std::endl;
+        }
+        return hit;
     }
     
     // Fallback to brute force
+    if (debug_mode) {
+        std::cout << "[Scene::hit] Using brute force (BVH disabled or null)" << std::endl;
+    }
+    
     HitRecord temp_rec;
     bool hit_anything = false;
     double closest_so_far = t_max;
@@ -68,6 +95,11 @@ bool Scene::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) cons
             rec = temp_rec;
         }
     }
+    
+    if (debug_mode && hit_anything) {
+        std::cout << "[Scene::hit] Brute force hit: object_id=" << rec.object_id << std::endl;
+    }
+    
     return hit_anything;
 }
 
@@ -76,12 +108,27 @@ int Scene::cast_ray_for_selection(const Ray& ray, double t_min, double t_max) co
     int selected_id = -1;
     double closest_t = t_max;
 
+    if (debug_mode) {
+        std::cout << "[Scene::cast_ray_for_selection] Ray from (" 
+                  << ray.origin.x << "," << ray.origin.y << "," << ray.origin.z << ")" << std::endl;
+    }
+
     for (const auto& sphere : spheres) {
         if (sphere.hit(ray, t_min, closest_t, rec)) {
             closest_t = rec.t;
             selected_id = sphere.object_id;
+            if (debug_mode) {
+                std::cout << "  Hit sphere: " << sphere.name 
+                          << " id=" << sphere.object_id 
+                          << " at t=" << rec.t << std::endl;
+            }
         }
     }
+    
+    if (debug_mode) {
+        std::cout << "[Scene::cast_ray_for_selection] Selected id: " << selected_id << std::endl;
+    }
+    
     return selected_id;
 }
 

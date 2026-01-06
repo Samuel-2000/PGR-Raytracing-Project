@@ -48,7 +48,7 @@ class Matrix3:
 class RayTracerInteraction:
     """C++ Ray Tracer with Full Interactive Controls"""
     
-    def __init__(self, width: int = 400, height: int = 300):
+    def __init__(self, width: int = 400, height: int = 300, debug_mode: bool = False):
         self.width = width
         self.height = height
         
@@ -98,6 +98,16 @@ class RayTracerInteraction:
         self.denoiser = Denoiser()
         
         print(f"✓ Initialized C++ Ray Tracer: {width}x{height}")
+
+        self.ray_tracer.set_debug_mode(debug_mode)
+        self.scene.debug_mode = debug_mode
+        
+        if debug_mode:
+            print(f"[DEBUG] RayTracer initialized with debug mode")
+            print(f"[DEBUG] Scene has {len(self.scene.spheres)} spheres")
+            for i, sphere in enumerate(self.scene.spheres):
+                print(f"[DEBUG] Sphere {i}: {sphere.name}, id={sphere.object_id}, "
+                    f"pos=({sphere.center.x:.2f}, {sphere.center.y:.2f}, {sphere.center.z:.2f})")
 
     def create_interactive_scene(self) -> Scene:
         """Create a scene with interactive objects - FIXED VERSION"""
@@ -206,9 +216,17 @@ class RayTracerInteraction:
                 obj.center.y = max(0.1, min(8, obj.center.y))  # Fixed: avoid going underground
                 obj.center.z = max(-8, min(2, obj.center.z))
                 
+                if self.scene.debug_mode:
+                    print(f"\n[DEBUG] Moving {obj.name} to ({obj.center.x:.2f}, {obj.center.y:.2f}, {obj.center.z:.2f})")
+                    print(f"[DEBUG] Rebuilding BVH...")
+                
                 self.scene.build_bvh()
+                
+                if self.scene.debug_mode:
+                    debug_info = self.ray_tracer.get_debug_info()
+                    print(f"[DEBUG] BVH rebuild complete. Stats: {debug_info.get_stats()}")
+                
                 self.restart_rendering()
-                print(f"Moved {obj.name} to ({obj.center.x:.1f}, {obj.center.y:.1f}, {obj.center.z:.1f})")
 
     def move_camera(self, dx: float, dy: float, dz: float):
         """Move camera in world space - FIXED VERSION"""

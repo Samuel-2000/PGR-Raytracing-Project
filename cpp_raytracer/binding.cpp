@@ -73,6 +73,13 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("get_ray", &Camera::get_ray)
         .def("move", &Camera::move)
         .def("rotate", &Camera::rotate);
+
+    py::class_<DebugInfo>(m, "DebugInfo")
+        .def_readwrite("enable_debug", &DebugInfo::enable_debug)
+        .def_readwrite("build_count", &DebugInfo::build_count)
+        .def_readwrite("render_count", &DebugInfo::render_count)
+        .def("reset", &DebugInfo::reset)
+        .def("get_stats", &DebugInfo::get_stats);
     
     py::class_<Scene>(m, "Scene")
         .def(py::init<>())
@@ -83,6 +90,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("build_bvh", &Scene::build_bvh)
         .def("hit", &Scene::hit)
         .def("cast_ray_for_selection", &Scene::cast_ray_for_selection);
+        .def_readwrite("debug_mode", &Scene::debug_mode)
     
     py::class_<RayTracer>(m, "RayTracer")
         .def(py::init<>())
@@ -92,4 +100,6 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("select_object", &RayTracer::select_object)
         .def("move_camera", &RayTracer::move_camera)
         .def("trace_ray", &RayTracer::trace_ray);
+        .def("set_debug_mode", &RayTracer::set_debug_mode)
+        .def("get_debug_info", &RayTracer::get_debug_info)
 }

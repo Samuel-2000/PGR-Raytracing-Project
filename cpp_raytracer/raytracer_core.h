@@ -168,12 +168,29 @@ public:
 
 class BVH;
 
+struct DebugInfo {
+    bool enable_debug = false;
+    int build_count = 0;
+    int render_count = 0;
+    
+    void reset() {
+        build_count = 0;
+        render_count = 0;
+    }
+    
+    std::string get_stats() const {
+        return "Builds: " + std::to_string(build_count) + 
+               ", Renders: " + std::to_string(render_count);
+    }
+};
+
 class Scene {
 public:
     std::vector<Sphere> spheres;
     Vector3 background_color;
     BVH* bvh;
     bool use_bvh;
+    bool debug_mode;
     
     Scene();
     ~Scene();
@@ -192,6 +209,7 @@ private:
     Camera camera;
     std::mt19937 gen;
     std::uniform_real_distribution<double> dis;
+    DebugInfo debug_info;
     
     Vector3 random_in_unit_sphere();
     Vector3 random_in_hemisphere(const Vector3& normal);
@@ -210,4 +228,7 @@ public:
     Camera& get_camera() { return camera; }
     int select_object(double x, double y, int width, int height);
     void move_camera(const Vector3& delta);
+
+    void set_debug_mode(bool enable) { debug_info.enable_debug = enable; }
+    DebugInfo get_debug_info() const { return debug_info; }
 };

@@ -1,3 +1,4 @@
+// bvh.h - FIXED VERSION
 #pragma once
 #include "raytracer_core.h"
 #include <algorithm>
@@ -22,26 +23,29 @@ public:
     AABB box;
     BVHNode* left;
     BVHNode* right;
-    std::vector<Sphere> spheres;  // CHANGED: Store multiple spheres
+    std::vector<int> sphere_indices;  // Store indices into scene's sphere array
     bool is_leaf;
     
     BVHNode();
     ~BVHNode();
     
-    bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
+    bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
+            const std::vector<Sphere>& scene_spheres) const;
 };
 
 class BVH {
 private:
     BVHNode* root;
     
-    BVHNode* build_tree(std::vector<Sphere>& spheres, size_t start, size_t end, int depth = 0);
+    BVHNode* build_tree(const std::vector<Sphere>& scene_spheres,
+                       std::vector<int>& indices, size_t start, size_t end, int depth = 0);
     bool box_compare(const Sphere& a, const Sphere& b, int axis);
     
 public:
     BVH();
     ~BVH();
     
-    void build(const std::vector<Sphere>& spheres);
-    bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
+    void build(const std::vector<Sphere>& scene_spheres);
+    bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
+            const std::vector<Sphere>& scene_spheres) const;
 };
