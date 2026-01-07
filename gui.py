@@ -1,16 +1,13 @@
-# gui.py
-
 import sys
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QSlider, QCheckBox, QComboBox, QLabel, QPushButton,
                              QTabWidget, QSplitter, QProgressBar, QSpinBox, QDoubleSpinBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QKeyEvent
 import cv2
 
-from interaction import RayTracerInteraction
-
+from interaction import RayTracerInteraction, RenderMode
 
 class RenderThread(QThread):
     """Thread for handling rendering updates"""
@@ -21,13 +18,12 @@ class RenderThread(QThread):
         super().__init__()
         self.raytracer = raytracer
         self.running = True
-        
+    
     def run(self):
         """Main rendering loop"""
         self.raytracer.start_rendering()
         
         while self.running:
-            # Process frames from renderer
             while self.raytracer.has_frames():
                 frame = self.raytracer.get_frame()
                 if frame is None:
@@ -39,20 +35,20 @@ class RenderThread(QThread):
                 
                 self.frame_ready.emit(frame)
             
-            self.msleep(16)  # ~60 FPS UI update
-            
+            self.msleep(16)  # ~60 FPS
+    
     def stop(self):
         """Stop the rendering thread"""
         self.running = False
         self.raytracer.stop_rendering()
         self.wait()
 
-
 class ImageDisplay(QLabel):
     """Custom image display widget with mouse interaction"""
     mouse_moved = pyqtSignal(float, float)
-    mouse_pressed = pyqtSignal(float, float)
-    mouse_released = pyqtSignal()
+    mouse_pressed = pyqtSignal(float, float, int)
+    mouse_released = pyqtSignal(int)
+    right_click = pyqtSignal(float, float)
     
     def __init__(self):
         super().__init__()
@@ -61,68 +57,65 @@ class ImageDisplay(QLabel):
         self.setMinimumSize(400, 300)
         
         self.dragging = False
+        self.drag_button = None
         self.last_pos = None
-        
+    
     def set_image(self, image_array):
         """Set image from numpy array"""
         if image_array is None or image_array.size == 0:
             return
-            
-        # Convert numpy array to QImage
+        
         height, width, channel = image_array.shape
         bytes_per_line = 3 * width
         
-        # Convert to 8-bit
         image_8bit = (np.clip(image_array, 0, 1) * 255).astype(np.uint8)
-        
-        # Convert BGR to RGB
         image_rgb = cv2.cvtColor(image_8bit, cv2.COLOR_BGR2RGB)
         
         q_image = QImage(image_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
         self.setPixmap(QPixmap.fromImage(q_image))
-        
+    
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        button = event.button()
+        if button in [Qt.LeftButton, Qt.RightButton]:
             self.dragging = True
+            self.drag_button = button
             self.last_pos = event.pos()
-            # Convert to normalized coordinates
+            
             if self.pixmap():
                 pixmap_size = self.pixmap().size()
                 label_size = self.size()
                 
-                # Calculate offset to center the image
                 x_offset = (label_size.width() - pixmap_size.width()) / 2
                 y_offset = (label_size.height() - pixmap_size.height()) / 2
                 
-                # Normalize coordinates
                 norm_x = (event.x() - x_offset) / pixmap_size.width()
                 norm_y = (event.y() - y_offset) / pixmap_size.height()
                 
                 if 0 <= norm_x <= 1 and 0 <= norm_y <= 1:
-                    self.mouse_pressed.emit(norm_x, norm_y)
-                    
+                    if button == Qt.RightButton:
+                        self.right_click.emit(norm_x, norm_y)
+                    self.mouse_pressed.emit(norm_x, norm_y, button)
+    
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        button = event.button()
+        if button == self.drag_button:
             self.dragging = False
+            self.drag_button = None
             self.last_pos = None
-            self.mouse_released.emit()
-            
+            self.mouse_released.emit(button)
+    
     def mouseMoveEvent(self, event):
         if self.dragging and self.last_pos and self.pixmap():
             current_pos = event.pos()
             dx = current_pos.x() - self.last_pos.x()
             dy = current_pos.y() - self.last_pos.y()
             
-            # Normalize movement
-            if self.pixmap():
-                pixmap_size = self.pixmap().size()
-                norm_dx = dx / pixmap_size.width()
-                norm_dy = dy / pixmap_size.height()
-                
-                self.mouse_moved.emit(norm_dx, norm_dy)
-                
+            pixmap_size = self.pixmap().size()
+            norm_dx = dx / pixmap_size.width()
+            norm_dy = dy / pixmap_size.height()
+            
+            self.mouse_moved.emit(norm_dx, norm_dy)
             self.last_pos = current_pos
-
 
 class ControlPanel(QWidget):
     """Control panel with all settings"""
@@ -132,18 +125,18 @@ class ControlPanel(QWidget):
         super().__init__()
         self.raytracer = raytracer
         self.setup_ui()
-        # Initialize object info after UI is setup
         self.update_object_info()
-        
+        self.update_camera_info()
+    
     def setup_ui(self):
-        """Setup the control panel UI - UPDATED VERSION"""
+        """Setup the control panel UI"""
         layout = QVBoxLayout()
         
         # Rendering settings
         render_group = self.create_render_group()
         layout.addWidget(render_group)
         
-        # Camera controls - ADD THIS
+        # Camera settings
         camera_group = self.create_camera_group()
         layout.addWidget(camera_group)
         
@@ -161,9 +154,9 @@ class ControlPanel(QWidget):
         
         layout.addStretch()
         self.setLayout(layout)
-        
+    
     def create_render_group(self):
-        """Create rendering controls group"""
+        """Create rendering controls"""
         group = QGroupBox("Rendering Settings")
         layout = QVBoxLayout()
         
@@ -208,116 +201,126 @@ class ControlPanel(QWidget):
         exposure_layout.addWidget(self.exposure)
         layout.addLayout(exposure_layout)
         
-        # Move Speed
+        group.setLayout(layout)
+        return group
+    
+    def create_camera_group(self):
+        """Create camera controls"""
+        group = QGroupBox("Camera Settings")
+        layout = QVBoxLayout()
+        
+        # Camera position
+        pos_group = QGroupBox("Position")
+        pos_layout = QVBoxLayout()
+        
+        # X
+        x_layout = QHBoxLayout()
+        x_layout.addWidget(QLabel("X:"))
+        self.cam_x = QDoubleSpinBox()
+        self.cam_x.setRange(-20, 20)
+        self.cam_x.setSingleStep(0.1)
+        self.cam_x.setValue(0.0)
+        self.cam_x.valueChanged.connect(self.on_camera_pos_changed)
+        x_layout.addWidget(self.cam_x)
+        pos_layout.addLayout(x_layout)
+        
+        # Y
+        y_layout = QHBoxLayout()
+        y_layout.addWidget(QLabel("Y:"))
+        self.cam_y = QDoubleSpinBox()
+        self.cam_y.setRange(-20, 20)
+        self.cam_y.setSingleStep(0.1)
+        self.cam_y.setValue(2.0)
+        self.cam_y.valueChanged.connect(self.on_camera_pos_changed)
+        y_layout.addWidget(self.cam_y)
+        pos_layout.addLayout(y_layout)
+        
+        # Z
+        z_layout = QHBoxLayout()
+        z_layout.addWidget(QLabel("Z:"))
+        self.cam_z = QDoubleSpinBox()
+        self.cam_z.setRange(-20, 20)
+        self.cam_z.setSingleStep(0.1)
+        self.cam_z.setValue(5.0)
+        self.cam_z.valueChanged.connect(self.on_camera_pos_changed)
+        z_layout.addWidget(self.cam_z)
+        pos_layout.addLayout(z_layout)
+        
+        pos_group.setLayout(pos_layout)
+        layout.addWidget(pos_group)
+        
+        # Camera target
+        target_group = QGroupBox("Target")
+        target_layout = QVBoxLayout()
+        
+        # Target X
+        tx_layout = QHBoxLayout()
+        tx_layout.addWidget(QLabel("X:"))
+        self.target_x = QDoubleSpinBox()
+        self.target_x.setRange(-20, 20)
+        self.target_x.setSingleStep(0.1)
+        self.target_x.setValue(0.0)
+        self.target_x.valueChanged.connect(self.on_camera_target_changed)
+        tx_layout.addWidget(self.target_x)
+        target_layout.addLayout(tx_layout)
+        
+        # Target Y
+        ty_layout = QHBoxLayout()
+        ty_layout.addWidget(QLabel("Y:"))
+        self.target_y = QDoubleSpinBox()
+        self.target_y.setRange(-20, 20)
+        self.target_y.setSingleStep(0.1)
+        self.target_y.setValue(0.0)
+        self.target_y.valueChanged.connect(self.on_camera_target_changed)
+        ty_layout.addWidget(self.target_y)
+        target_layout.addLayout(ty_layout)
+        
+        # Target Z
+        tz_layout = QHBoxLayout()
+        tz_layout.addWidget(QLabel("Z:"))
+        self.target_z = QDoubleSpinBox()
+        self.target_z.setRange(-20, 20)
+        self.target_z.setSingleStep(0.1)
+        self.target_z.setValue(-1.0)
+        self.target_z.valueChanged.connect(self.on_camera_target_changed)
+        tz_layout.addWidget(self.target_z)
+        target_layout.addLayout(tz_layout)
+        
+        target_group.setLayout(target_layout)
+        layout.addWidget(target_group)
+        
+        # FOV
+        fov_layout = QHBoxLayout()
+        fov_layout.addWidget(QLabel("FOV:"))
+        self.fov = QDoubleSpinBox()
+        self.fov.setRange(10, 120)
+        self.fov.setSingleStep(1.0)
+        self.fov.setValue(45.0)
+        self.fov.valueChanged.connect(self.on_camera_fov_changed)
+        fov_layout.addWidget(self.fov)
+        layout.addLayout(fov_layout)
+        
+        # Speed controls
         speed_layout = QHBoxLayout()
         speed_layout.addWidget(QLabel("Move Speed:"))
         self.move_speed = QDoubleSpinBox()
-        self.move_speed.setRange(0.1, 2.0)
-        self.move_speed.setSingleStep(0.1)
-        self.move_speed.setValue(self.raytracer.settings["move_speed"])
-        self.move_speed.valueChanged.connect(self.on_settings_changed)
+        self.move_speed.setRange(0.01, 1.0)
+        self.move_speed.setSingleStep(0.01)
+        self.move_speed.setValue(self.raytracer.settings["camera_move_speed"])
+        self.move_speed.valueChanged.connect(self.on_move_speed_changed)
         speed_layout.addWidget(self.move_speed)
         layout.addLayout(speed_layout)
         
-        group.setLayout(layout)
-        return group
-    
-
-    def create_camera_group(self):
-        """Create camera controls group"""
-        group = QGroupBox("Camera Controls")
-        layout = QVBoxLayout()
-        
-        # Camera movement buttons
-        move_layout = QVBoxLayout()
-        move_label = QLabel("Camera Movement:")
-        move_label.setStyleSheet("font-weight: bold;")
-        move_layout.addWidget(move_label)
-        
-        # Camera movement grid
-        cam_grid = QHBoxLayout()
-        
-        # Left/Right
-        cam_lr_layout = QVBoxLayout()
-        self.cam_btn_left = QPushButton("← Left")
-        self.cam_btn_right = QPushButton("Right →")
-        cam_lr_layout.addWidget(self.cam_btn_left)
-        cam_lr_layout.addWidget(self.cam_btn_right)
-        
-        # Up/Down  
-        cam_ud_layout = QVBoxLayout()
-        self.cam_btn_up = QPushButton("↑ Up")
-        self.cam_btn_down = QPushButton("Down ↓")
-        cam_ud_layout.addWidget(self.cam_btn_up)
-        cam_ud_layout.addWidget(self.cam_btn_down)
-        
-        # Forward/Backward
-        cam_fb_layout = QVBoxLayout()
-        self.cam_btn_forward = QPushButton("↗ Forward")
-        self.cam_btn_backward = QPushButton("Backward ↙")
-        cam_fb_layout.addWidget(self.cam_btn_forward)
-        cam_fb_layout.addWidget(self.cam_btn_backward)
-        
-        cam_grid.addLayout(cam_lr_layout)
-        cam_grid.addLayout(cam_ud_layout) 
-        cam_grid.addLayout(cam_fb_layout)
-        
-        move_layout.addLayout(cam_grid)
-        
-        # Camera info
-        self.camera_info = QLabel("Camera: (0.00, 2.00, 3.00)")
-        self.camera_info.setStyleSheet("color: #aaa; font-size: 10px;")
-        move_layout.addWidget(self.camera_info)
-        
-        layout.addLayout(move_layout)
-        
-        # Connect camera buttons
-        self.cam_btn_left.clicked.connect(lambda: self.debounced_camera_move(-1, 0, 0))
-        self.cam_btn_right.clicked.connect(lambda: self.debounced_camera_move(1, 0, 0))
-        self.cam_btn_up.clicked.connect(lambda: self.debounced_camera_move(0, 1, 0))
-        self.cam_btn_down.clicked.connect(lambda: self.debounced_camera_move(0, -1, 0))
-        self.cam_btn_forward.clicked.connect(lambda: self.debounced_camera_move(0, 0, 1))
-        self.cam_btn_backward.clicked.connect(lambda: self.debounced_camera_move(0, 0, -1))
+        # Reset button
+        reset_btn = QPushButton("Reset Camera")
+        reset_btn.clicked.connect(self.reset_camera)
+        layout.addWidget(reset_btn)
         
         group.setLayout(layout)
         return group
     
-    def debounced_camera_move(self, dx, dy, dz):
-        """Debounced camera movement - FIXED VERSION"""
-        try:
-            self.raytracer.move_camera(dx, dy, dz)
-            self.update_camera_info()
-            self.disable_camera_buttons()
-            QTimer.singleShot(300, self.enable_camera_buttons)  # Longer delay
-        except Exception as e:
-            print(f"Camera move error: {e}")
-    
-    def disable_camera_buttons(self):
-        """Disable camera buttons briefly"""
-        for btn in [self.cam_btn_left, self.cam_btn_right, self.cam_btn_up,
-                   self.cam_btn_down, self.cam_btn_forward, self.cam_btn_backward]:
-            btn.setEnabled(False)
-    
-    def enable_camera_buttons(self):
-        """Re-enable camera buttons"""
-        for btn in [self.cam_btn_left, self.cam_btn_right, self.cam_btn_up,
-                   self.cam_btn_down, self.cam_btn_forward, self.cam_btn_backward]:
-            btn.setEnabled(True)
-    
-    def update_camera_info(self):
-        """Update camera position info - FIXED VERSION"""
-        try:
-            camera = self.raytracer.camera
-            if camera:
-                pos = camera.position
-                info = f"Camera: ({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})"
-                self.camera_info.setText(info)
-        except:
-            self.camera_info.setText("Camera: (0.0, 2.0, 5.0)")  # Fallback
-
-        
     def create_object_group(self):
-        """Create object controls group - FIXED VERSION"""
+        """Create object controls"""
         group = QGroupBox("Object Controls")
         layout = QVBoxLayout()
         
@@ -326,11 +329,10 @@ class ControlPanel(QWidget):
         obj_layout.addWidget(QLabel("Object:"))
         self.object_select = QComboBox()
         
-        # Add objects including ground
-        object_count = self.raytracer.get_object_count() + 1  # +1 for ground
-        for i in range(object_count):
+        # Populate objects
+        for i in range(self.raytracer.get_object_count() + 1):
             obj = self.raytracer.scene.spheres[i] if i < len(self.raytracer.scene.spheres) else None
-            if obj and hasattr(obj, 'name') and obj.name:
+            if obj and obj.name:
                 self.object_select.addItem(obj.name)
             else:
                 name = "Ground" if i == 0 else f"Object {i}"
@@ -341,76 +343,54 @@ class ControlPanel(QWidget):
         layout.addLayout(obj_layout)
         
         # Object info
-        self.object_info = QLabel("Selected: Red Metallic")
+        self.object_info = QLabel("Selected: None")
         self.object_info.setStyleSheet("color: #aaa; font-style: italic;")
         layout.addWidget(self.object_info)
         
-        # Movement buttons - FIXED VERSION
+        # Movement buttons
+        move_group = QGroupBox("Keyboard Movement")
         move_layout = QVBoxLayout()
-        move_label = QLabel("Movement:")
-        move_label.setStyleSheet("font-weight: bold;")
-        move_layout.addWidget(move_label)
         
-        # Movement grid
-        move_grid = QHBoxLayout()
+        # Horizontal movement
+        horiz_layout = QHBoxLayout()
+        self.btn_left = QPushButton("← Left (A)")
+        self.btn_right = QPushButton("Right (D) →")
+        horiz_layout.addWidget(self.btn_left)
+        horiz_layout.addWidget(self.btn_right)
+        move_layout.addLayout(horiz_layout)
         
-        # Left/Right
-        lr_layout = QVBoxLayout()
-        self.btn_left = QPushButton("← Left")
-        self.btn_right = QPushButton("Right →")
-        lr_layout.addWidget(self.btn_left)
-        lr_layout.addWidget(self.btn_right)
+        # Vertical movement
+        vert_layout = QHBoxLayout()
+        self.btn_up = QPushButton("↑ Up (W)")
+        self.btn_down = QPushButton("Down (S) ↓")
+        vert_layout.addWidget(self.btn_up)
+        vert_layout.addWidget(self.btn_down)
+        move_layout.addLayout(vert_layout)
         
-        # Up/Down  
-        ud_layout = QVBoxLayout()
-        self.btn_up = QPushButton("↑ Up")
-        self.btn_down = QPushButton("Down ↓")
-        ud_layout.addWidget(self.btn_up)
-        ud_layout.addWidget(self.btn_down)
+        # Depth movement
+        depth_layout = QHBoxLayout()
+        self.btn_forward = QPushButton("↗ Forward (Q)")
+        self.btn_backward = QPushButton("Backward (E) ↙")
+        depth_layout.addWidget(self.btn_forward)
+        depth_layout.addWidget(self.btn_backward)
+        move_layout.addLayout(depth_layout)
         
-        # Forward/Backward
-        fb_layout = QVBoxLayout()
-        self.btn_forward = QPushButton("↗ Forward")
-        self.btn_backward = QPushButton("Backward ↙")
-        fb_layout.addWidget(self.btn_forward)
-        fb_layout.addWidget(self.btn_backward)
+        move_group.setLayout(move_layout)
+        layout.addWidget(move_group)
         
-        move_grid.addLayout(lr_layout)
-        move_grid.addLayout(ud_layout) 
-        move_grid.addLayout(fb_layout)
-        
-        move_layout.addLayout(move_grid)
-        layout.addLayout(move_layout)
-        
-        # Connect buttons with debouncing
-        self.btn_left.clicked.connect(lambda: self.debounced_move(-1, 0, 0))
-        self.btn_right.clicked.connect(lambda: self.debounced_move(1, 0, 0))
-        self.btn_up.clicked.connect(lambda: self.debounced_move(0, 1, 0))
-        self.btn_down.clicked.connect(lambda: self.debounced_move(0, -1, 0))
-        self.btn_forward.clicked.connect(lambda: self.debounced_move(0, 0, -1))
-        self.btn_backward.clicked.connect(lambda: self.debounced_move(0, 0, 1))
+        # Connect buttons
+        self.btn_left.clicked.connect(lambda: self.raytracer.move_object(-1, 0, 0))
+        self.btn_right.clicked.connect(lambda: self.raytracer.move_object(1, 0, 0))
+        self.btn_up.clicked.connect(lambda: self.raytracer.move_object(0, 1, 0))
+        self.btn_down.clicked.connect(lambda: self.raytracer.move_object(0, -1, 0))
+        self.btn_forward.clicked.connect(lambda: self.raytracer.move_object(0, 0, -1))
+        self.btn_backward.clicked.connect(lambda: self.raytracer.move_object(0, 0, 1))
         
         group.setLayout(layout)
         return group
     
-    def debounced_move(self, dx, dy, dz):
-        """Debounced movement to prevent rapid successive calls"""
-        self.move_object(dx, dy, dz)
-        # Disable buttons briefly to prevent spam
-        for btn in [self.btn_left, self.btn_right, self.btn_up, 
-                   self.btn_down, self.btn_forward, self.btn_backward]:
-            btn.setEnabled(False)
-        QTimer.singleShot(200, self.enable_move_buttons)  # Re-enable after 200ms
-    
-    def enable_move_buttons(self):
-        """Re-enable movement buttons"""
-        for btn in [self.btn_left, self.btn_right, self.btn_up,
-                   self.btn_down, self.btn_forward, self.btn_backward]:
-            btn.setEnabled(True)
-
-        
     def create_material_group(self):
-        """Create material controls group"""
+        """Create material controls"""
         group = QGroupBox("Material Properties")
         layout = QVBoxLayout()
         
@@ -436,7 +416,7 @@ class ControlPanel(QWidget):
         
         # Color
         color_layout = QHBoxLayout()
-        color_layout.addWidget(QLabel("Color R:"))
+        color_layout.addWidget(QLabel("Color:"))
         self.color_r = QSlider(Qt.Horizontal)
         self.color_r.setRange(0, 100)
         self.color_r.setValue(90)
@@ -444,33 +424,31 @@ class ControlPanel(QWidget):
         color_layout.addWidget(self.color_r)
         layout.addLayout(color_layout)
         
-        # Light intensity - FIXED VERSION
+        # Light intensity
         light_layout = QHBoxLayout()
         light_layout.addWidget(QLabel("Light Power:"))
-        self.light_intensity = QDoubleSpinBox()  # Changed to QDoubleSpinBox
-        self.light_intensity.setRange(0.1, 100.0)  # Allow decimal values
-        self.light_intensity.setSingleStep(0.5)  # Smaller steps
+        self.light_intensity = QDoubleSpinBox()
+        self.light_intensity.setRange(0.1, 100.0)
+        self.light_intensity.setSingleStep(0.5)
         self.light_intensity.setValue(15.0)
-        self.light_intensity.setDecimals(1)  # Allow decimal input
-        self.light_intensity.setKeyboardTracking(False)  # Don't update on every keystroke
+        self.light_intensity.setDecimals(1)
+        self.light_intensity.setKeyboardTracking(False)
         self.light_intensity.valueChanged.connect(self.on_light_intensity_changed)
         light_layout.addWidget(self.light_intensity)
         layout.addLayout(light_layout)
         
         group.setLayout(layout)
         return group
-        
+    
     def create_denoiser_group(self):
-        """Create denoiser controls group"""
+        """Create denoiser controls"""
         group = QGroupBox("Denoiser Settings")
         layout = QVBoxLayout()
         
-        # Show denoisers
         self.show_denoisers = QCheckBox("Show Denoisers")
         self.show_denoisers.toggled.connect(self.on_show_denoisers_changed)
         layout.addWidget(self.show_denoisers)
         
-        # Denoiser selection
         denoiser_layout = QVBoxLayout()
         denoiser_layout.addWidget(QLabel("Denoiser Methods:"))
         
@@ -494,7 +472,7 @@ class ControlPanel(QWidget):
         layout.addLayout(denoiser_layout)
         group.setLayout(layout)
         return group
-        
+    
     def on_settings_changed(self):
         """Handle settings changes"""
         settings = {
@@ -502,45 +480,100 @@ class ControlPanel(QWidget):
             'samples_per_batch': self.samples_batch.value(),
             'max_depth': self.max_depth.value(),
             'exposure': self.exposure.value(),
-            'move_speed': self.move_speed.value(),
         }
         self.settings_changed.emit(settings)
-        
+    
+    def on_camera_pos_changed(self):
+        """Update camera position"""
+        pos = Vector3(self.cam_x.value(), self.cam_y.value(), self.cam_z.value())
+        self.raytracer.camera.position = pos
+        self.raytracer.update_camera_frame()
+        self.raytracer.restart_rendering()
+    
+    def on_camera_target_changed(self):
+        """Update camera target"""
+        target = Vector3(self.target_x.value(), self.target_y.value(), self.target_z.value())
+        self.raytracer.camera.target = target
+        self.raytracer.update_camera_frame()
+        self.raytracer.restart_rendering()
+    
+    def on_camera_fov_changed(self):
+        """Update camera FOV"""
+        self.raytracer.camera.fov = self.fov.value()
+        self.raytracer.restart_rendering()
+    
+    def on_move_speed_changed(self):
+        """Update camera movement speed"""
+        self.raytracer.settings['camera_move_speed'] = self.move_speed.value()
+    
+    def reset_camera(self):
+        """Reset camera to default"""
+        self.cam_x.setValue(0.0)
+        self.cam_y.setValue(2.0)
+        self.cam_z.setValue(5.0)
+        self.target_x.setValue(0.0)
+        self.target_y.setValue(0.0)
+        self.target_z.setValue(-1.0)
+        self.fov.setValue(45.0)
+    
+    def update_camera_info(self):
+        """Update camera controls from current camera"""
+        camera = self.raytracer.camera
+        if camera:
+            self.cam_x.blockSignals(True)
+            self.cam_y.blockSignals(True)
+            self.cam_z.blockSignals(True)
+            self.target_x.blockSignals(True)
+            self.target_y.blockSignals(True)
+            self.target_z.blockSignals(True)
+            self.fov.blockSignals(True)
+            
+            self.cam_x.setValue(camera.position.x)
+            self.cam_y.setValue(camera.position.y)
+            self.cam_z.setValue(camera.position.z)
+            self.target_x.setValue(camera.target.x)
+            self.target_y.setValue(camera.target.y)
+            self.target_z.setValue(camera.target.z)
+            self.fov.setValue(camera.fov)
+            
+            self.cam_x.blockSignals(False)
+            self.cam_y.blockSignals(False)
+            self.cam_z.blockSignals(False)
+            self.target_x.blockSignals(False)
+            self.target_y.blockSignals(False)
+            self.target_z.blockSignals(False)
+            self.fov.blockSignals(False)
+    
     def on_object_selected(self, index):
         """Handle object selection"""
         self.raytracer.settings['selected_object'] = index
         self.update_object_info()
         self.update_material_sliders()
-        
+    
     def update_object_info(self):
-        """Update object information"""
+        """Update object information display"""
         obj = self.raytracer.get_selected_object()
         if obj:
-            name = getattr(obj, 'name', f'Object {self.object_select.currentIndex()}')
-            self.object_info.setText(f"Selected: {name}")
-            
+            self.object_info.setText(f"Selected: {obj.name}")
+    
     def update_material_sliders(self):
-        """Update material sliders to match selected object - FIXED VERSION"""
+        """Update material sliders to match selected object"""
         obj = self.raytracer.get_selected_object()
         if obj:
             mat = obj.material
             
-            # Block signals temporarily to prevent recursive updates
             self.metallic.blockSignals(True)
             self.roughness.blockSignals(True)
             self.color_r.blockSignals(True)
             self.light_intensity.blockSignals(True)
             
-            # Update sliders
             self.metallic.setValue(int(mat.metallic * 100))
             self.roughness.setValue(int(mat.roughness * 100))
             
-            # For color, use average of RGB for the slider
             if hasattr(mat.albedo, 'x'):
                 avg_color = (mat.albedo.x + mat.albedo.y + mat.albedo.z) / 3.0
                 self.color_r.setValue(int(avg_color * 100))
             
-            # Update light intensity if it's a light
             if hasattr(mat, 'emission') and hasattr(mat.emission, 'x'):
                 emission = mat.emission
                 avg_emission = (emission.x + emission.y + emission.z) / 3.0
@@ -548,17 +581,12 @@ class ControlPanel(QWidget):
                 self.light_intensity.setEnabled(avg_emission > 0.1)
             else:
                 self.light_intensity.setEnabled(False)
-                
-            # Re-enable signals
+            
             self.metallic.blockSignals(False)
             self.roughness.blockSignals(False)
             self.color_r.blockSignals(False)
             self.light_intensity.blockSignals(False)
-                
-    def move_object(self, dx, dy, dz):
-        """Move selected object"""
-        self.raytracer.move_object(dx, dy, dz)
-        
+    
     def on_material_changed(self, property_name):
         """Handle material property changes"""
         if property_name == 'albedo':
@@ -567,17 +595,17 @@ class ControlPanel(QWidget):
             value = getattr(self, property_name).value() / 100.0
         else:
             return
-            
-        self.raytracer.update_object_material(property_name, value)
         
+        self.raytracer.update_object_material(property_name, value)
+    
     def on_light_intensity_changed(self, value):
         """Handle light intensity changes"""
         self.raytracer.update_light_intensity(value)
-        
+    
     def on_show_denoisers_changed(self, checked):
         """Handle show denoisers toggle"""
         self.raytracer.settings['show_denoisers'] = checked
-        
+    
     def on_denoiser_selection_changed(self):
         """Handle denoiser selection changes"""
         selected = []
@@ -589,20 +617,38 @@ class ControlPanel(QWidget):
             selected.append('gaussian')
         if self.denoiser_median.isChecked():
             selected.append('median')
-            
+        
         self.raytracer.settings['selected_denoisers'] = selected
 
-
 class GUI(QMainWindow):
-    """Main application window - maintains original interface"""
+    """Main application window"""
     
     def __init__(self):
         super().__init__()
         self.raytracer = RayTracerInteraction(640, 480)
         self.render_thread = None
+        
+        # Camera key mapping
+        self.camera_keys = {
+            Qt.Key_W: 'forward',
+            Qt.Key_S: 'backward',
+            Qt.Key_A: 'left',
+            Qt.Key_D: 'right',
+            Qt.Key_Space: 'up',
+            Qt.Key_Control: 'down',
+            Qt.Key_Shift: 'up',  # Alternative up
+        }
+        
+        # Object dragging state
+        self.dragging_object = False
+        self.dimension_locks = {'x': False, 'y': False, 'z': False}
+        
+        # Track manual mode changes vs automatic ones
+        self.manual_mode_change = False
+        
         self.setup_ui()
         self.setup_rendering()
-        
+    
     def setup_ui(self):
         """Setup the main UI"""
         self.setWindowTitle("C++ Ray Tracer - Interactive Controls")
@@ -628,6 +674,15 @@ class GUI(QMainWindow):
         self.status_label = QLabel("Ready to render...")
         self.statusBar().addWidget(self.status_label)
         
+        # Mode indicator
+        self.mode_label = QLabel("Mode: Ray Tracing")
+        self.mode_label.setStyleSheet("color: #88c; font-weight: bold;")
+        self.statusBar().addPermanentWidget(self.mode_label)
+        
+        # Lock status
+        self.lock_label = QLabel("Locks: None")
+        self.statusBar().addPermanentWidget(self.lock_label)
+        
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -636,6 +691,9 @@ class GUI(QMainWindow):
         # Apply dark theme
         self.apply_dark_theme()
         
+        # Focus policy
+        self.setFocusPolicy(Qt.StrongFocus)
+    
     def apply_dark_theme(self):
         """Apply dark theme styling"""
         self.setStyleSheet("""
@@ -728,13 +786,51 @@ class GUI(QMainWindow):
             QLabel {
                 color: #ffffff;
             }
+            QPushButton {
+                background-color: #444;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 5px 10px;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #555;
+                border-color: #666;
+            }
+            QPushButton:pressed {
+                background-color: #333;
+            }
         """)
-        
+    
     def create_image_displays(self):
         """Create the image display area"""
         widget = QWidget()
         layout = QVBoxLayout()
         widget.setLayout(layout)
+        
+        # Mode selector
+        mode_widget = QWidget()
+        mode_layout = QHBoxLayout()
+        mode_widget.setLayout(mode_layout)
+        
+        self.raytrace_btn = QPushButton("Ray Tracing")
+        self.raytrace_btn.setCheckable(True)
+        self.raytrace_btn.setChecked(True)
+        self.raytrace_btn.clicked.connect(self.on_raytrace_mode)
+        mode_layout.addWidget(self.raytrace_btn)
+        
+        self.wireframe_btn = QPushButton("Wireframe")
+        self.wireframe_btn.setCheckable(True)
+        self.wireframe_btn.clicked.connect(self.on_wireframe_mode)
+        mode_layout.addWidget(self.wireframe_btn)
+        
+        self.silhouette_btn = QPushButton("Silhouette")
+        self.silhouette_btn.setCheckable(True)
+        self.silhouette_btn.clicked.connect(self.on_silhouette_mode)
+        mode_layout.addWidget(self.silhouette_btn)
+        
+        mode_layout.addStretch()
+        layout.addWidget(mode_widget)
         
         # Tab widget for different views
         self.tabs = QTabWidget()
@@ -745,9 +841,10 @@ class GUI(QMainWindow):
         main_tab.setLayout(main_layout)
         
         self.main_display = ImageDisplay()
-        self.main_display.mouse_moved.connect(self.on_mouse_drag)
         self.main_display.mouse_pressed.connect(self.on_mouse_press)
+        self.main_display.mouse_moved.connect(self.on_mouse_drag)
         self.main_display.mouse_released.connect(self.on_mouse_release)
+        self.main_display.right_click.connect(self.on_right_click)
         main_layout.addWidget(self.main_display)
         
         self.tabs.addTab(main_tab, "Main View")
@@ -767,7 +864,6 @@ class GUI(QMainWindow):
         denoiser_layout = QVBoxLayout()
         denoiser_tab.setLayout(denoiser_layout)
         
-        # Grid layout for denoiser displays
         denoiser_grid = QHBoxLayout()
         
         self.denoiser_displays = {}
@@ -787,29 +883,87 @@ class GUI(QMainWindow):
             
             denoiser_grid.addWidget(display_widget)
             self.denoiser_displays[method] = display
-            
+        
         denoiser_layout.addLayout(denoiser_grid)
         self.tabs.addTab(denoiser_tab, "Denoiser Views")
         
         layout.addWidget(self.tabs)
-        return widget
         
+        # Instructions
+        instructions = QLabel(
+            "<b>Controls:</b> WASD+Space/Ctrl to move camera | "
+            "<b>Right Click + Drag</b> to rotate camera | "
+            "<b>Hold X/Y/Z + Left Click + Drag</b> to move object | "
+            "<b>ESC</b> to cancel"
+        )
+        instructions.setStyleSheet("""
+            QLabel {
+                color: #aaa;
+                font-size: 10px;
+                padding: 5px;
+                background-color: #222;
+                border-radius: 3px;
+            }
+        """)
+        layout.addWidget(instructions)
+        
+        return widget
+    
     def create_control_panel(self):
         """Create the control panel"""
         self.control_panel = ControlPanel(self.raytracer)
         self.control_panel.settings_changed.connect(self.on_settings_changed)
         return self.control_panel
-        
+    
     def setup_rendering(self):
         """Setup rendering thread"""
         self.render_thread = RenderThread(self.raytracer)
         self.render_thread.frame_ready.connect(self.on_frame_ready)
         self.render_thread.rendering_finished.connect(self.on_rendering_finished)
         self.render_thread.start()
+    
+    def on_raytrace_mode(self):
+        """Switch to ray tracing mode"""
+        self.raytrace_btn.setChecked(True)
+        self.wireframe_btn.setChecked(False)
+        self.silhouette_btn.setChecked(False)
+        self.current_mode = "raytracing"
+        self.mode_label.setText("Mode: Ray Tracing")
+        self.mode_label.setStyleSheet("color: #88c; font-weight: bold;")
+        self.raytracer.render_mode = RenderMode.RAYTRACING
+        self.raytracer.restart_rendering()
+    
+    def on_wireframe_mode(self):
+        """Switch to wireframe mode - manual"""
+        self.manual_mode_change = True
+        self.raytrace_btn.setChecked(False)
+        self.wireframe_btn.setChecked(True)
+        self.silhouette_btn.setChecked(False)
         
+        self.mode_label.setText("Mode: Wireframe")
+        self.mode_label.setStyleSheet("color: #0f0; font-weight: bold;")
+        self.raytracer.render_mode = RenderMode.WIREFRAME
+        self.raytracer.previous_render_mode = RenderMode.WIREFRAME
+        self.raytracer._process_frame_for_display(0.016)
+        self.manual_mode_change = False
+    
+    def on_silhouette_mode(self):
+        """Switch to silhouette mode - manual"""
+        self.manual_mode_change = True
+        self.raytrace_btn.setChecked(False)
+        self.wireframe_btn.setChecked(False)
+        self.silhouette_btn.setChecked(True)
+        
+        self.mode_label.setText("Mode: Silhouette")
+        self.mode_label.setStyleSheet("color: #ff0; font-weight: bold;")
+        self.raytracer.render_mode = RenderMode.SILHOUETTE
+        self.raytracer.previous_render_mode = RenderMode.SILHOUETTE
+        self.raytracer._process_frame_for_display(0.016)
+        self.manual_mode_change = False
+    
     def on_frame_ready(self, frame_data):
         """Handle new frame from render thread"""
-        # Update main display
+        # Update displays
         self.main_display.set_image(frame_data['display'])
         self.enhanced_display.set_image(frame_data['enhanced'])
         
@@ -820,71 +974,219 @@ class GUI(QMainWindow):
                     self.denoiser_displays[method].set_image(image)
         
         # Update status
-        info = (f"Samples: {frame_data['samples']} | "
-               f"Batch Time: {frame_data['render_time']:.3f}s | "
-               f"FPS: {1/frame_data['render_time']:.1f}" if frame_data['render_time'] > 0 else "Rendering...")
-        self.status_label.setText(info)
+        mode = frame_data.get('mode', 'raytracing')
+        if mode == 'wireframe':
+            status = "Wireframe Mode - Right Drag to Rotate, WASD to Move"
+        elif mode == 'silhouette':
+            if self.dragging_object:
+                locks = self.get_lock_string()
+                status = f"Dragging Object - Locks: {locks}"
+            else:
+                status = "Silhouette Mode - Hold X/Y/Z + Drag to Move Objects"
+        else:
+            if frame_data['is_raytracing']:
+                status = (f"Samples: {frame_data['samples']} | "
+                         f"Batch Time: {frame_data['render_time']:.3f}s")
+            else:
+                status = "Ray Tracing Mode"
         
-        # Update progress
-        max_samples = self.raytracer.settings['max_samples']
-        progress = min(100, int((frame_data['samples'] / max_samples) * 100))
-        self.progress_bar.setValue(progress)
-        self.progress_bar.setVisible(progress < 100)
+        self.status_label.setText(status)
         
+        # Update progress bar
+        if frame_data.get('is_raytracing', False):
+            max_samples = self.raytracer.settings['max_samples']
+            progress = min(100, int((frame_data['samples'] / max_samples) * 100))
+            self.progress_bar.setValue(progress)
+            self.progress_bar.setVisible(progress < 100)
+        else:
+            self.progress_bar.setVisible(False)
+    
     def on_rendering_finished(self):
         """Handle rendering completion"""
         self.status_label.setText("Rendering Complete!")
         self.progress_bar.setVisible(False)
-        
+    
     def on_settings_changed(self, settings):
         """Handle settings changes"""
         self.raytracer.settings.update(settings)
         self.raytracer.restart_rendering()
+    
+    def on_mouse_press(self, x: float, y: float, button: int):
+        """Handle mouse press"""
+        if button == Qt.LeftButton:
+            # Check if any dimension is locked
+            any_lock = any(self.dimension_locks.values())
+            
+            if any_lock:
+                # Start object dragging
+                if self.raytracer.start_object_dragging(x, y):
+                    self.dragging_object = True
+                    # Only switch to silhouette if not already in it
+                    if not self.silhouette_btn.isChecked() and not self.manual_mode_change:
+                        self.on_silhouette_mode()
+            else:
+                # Simple object selection
+                if self.raytracer.select_object_by_click(x, y):
+                    # Update control panel
+                    idx = self.raytracer.settings['selected_object']
+                    self.control_panel.object_select.setCurrentIndex(idx)
+                    self.control_panel.update_object_info()
+                    self.control_panel.update_material_sliders()
         
-    def on_mouse_press(self, x, y):
-        """Handle mouse press - UPDATED VERSION"""
-        # Try object selection first
-        if self.raytracer.select_object_by_click(x, y):
-            # Update control panel to reflect new selection
-            self.control_panel.object_select.setCurrentIndex(self.raytracer.settings['selected_object'])
+        elif button == Qt.RightButton:
+            # Start camera rotation
+            self.raytracer.start_camera_rotation(x, y)
+            # Only switch to wireframe if not manually in another mode
+            if not self.wireframe_btn.isChecked() and not self.manual_mode_change:
+                self.on_wireframe_mode()
+    
+    def on_right_click(self, x: float, y: float):
+        """Handle right click (alternative)"""
+        self.raytracer.start_camera_rotation(x, y)
+        if not self.wireframe_btn.isChecked():
+            self.on_wireframe_mode()
+    
+    def on_mouse_drag(self, dx: float, dy: float):
+        """Handle mouse dragging"""
+        if self.dragging_object:
+            # Object dragging
+            self.raytracer.update_object_dragging(dx, dy)
+            
+            # Update object info
+            obj = self.raytracer.get_selected_object()
+            if obj:
+                pos = obj.center
+                self.control_panel.object_info.setText(
+                    f"Dragging: {obj.name} at ({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f})"
+                )
+        
+        elif self.raytracer.camera_rotating:
+            # Camera rotation
+            self.raytracer.update_camera_rotation(dx, dy)
+            self.control_panel.update_camera_info()
+    
+    def on_mouse_release(self, button: int):
+        """Handle mouse release with proper mode restoration"""
+        if button == Qt.LeftButton and self.dragging_object:
+            self.raytracer.stop_object_dragging()
+            self.dragging_object = False
+            self.dimension_locks = {'x': False, 'y': False, 'z': False}
+            self.update_lock_status()
+            
+            # Update control panel
             self.control_panel.update_object_info()
             self.control_panel.update_material_sliders()
-        else:
-            # If no object selected, start camera dragging
-            self.raytracer.camera_dragging = True
+            
+            # Only return to ray tracing if we weren't manually in another mode
+            if not self.manual_mode_change and self.raytracer.render_mode != RenderMode.RAYTRACING:
+                self.on_raytrace_mode()
+        
+        elif button == Qt.RightButton:
+            self.raytracer.stop_camera_rotation()
+            # Return to ray tracing only if it was the previous mode and not manually changed
+            if (self.raytracer.previous_render_mode == RenderMode.RAYTRACING and 
+                not self.manual_mode_change and
+                self.raytracer.render_mode != RenderMode.RAYTRACING):
+                self.on_raytrace_mode()
     
-    def on_mouse_drag(self, dx, dy):
-        """Handle mouse dragging - UPDATED VERSION"""
-        if self.raytracer.dragging:
-            # Object dragging
-            speed = 2.0
-            self.raytracer.move_object(dx * speed, -dy * speed, 0)
-        elif self.raytracer.camera_dragging:
-            # Camera rotation
-            self.raytracer.rotate_camera(dx, -dy)
-            
-    def on_mouse_release(self):
-        """Handle mouse release - UPDATED VERSION"""
-        self.raytracer.dragging = False
-        self.raytracer.camera_dragging = False
-        
+    
     def keyPressEvent(self, event):
-        """Handle keyboard input"""
+        """Handle keyboard input with better debouncing"""
         key = event.key()
-        move_dict = {
-            Qt.Key_Left: (-1, 0, 0), Qt.Key_Right: (1, 0, 0),
-            Qt.Key_Up: (0, 1, 0), Qt.Key_Down: (0, -1, 0),
-            Qt.Key_W: (0, 0, -1), Qt.Key_S: (0, 0, 1),
-            Qt.Key_A: (-1, 0, 0), Qt.Key_D: (1, 0, 0),
-            Qt.Key_Q: (0, 1, 0), Qt.Key_E: (0, -1, 0)
-        }
         
-        if key in move_dict:
-            self.raytracer.move_object(*move_dict[key])
+        # Camera movement keys
+        if key in self.camera_keys:
+            key_name = self.camera_keys[key]
+            # Only send if key state is changing
+            if not self.raytracer.camera_keys_pressed.get(key_name, False):
+                self.raytracer.set_camera_key_state(key_name, True)
+            event.accept()
+            return
+        
+        # Dimension locking for object dragging
+        if key == Qt.Key_X:
+            self.dimension_locks['x'] = not self.dimension_locks['x']
+            self.raytracer.set_dimension_lock('x', self.dimension_locks['x'])
+            self.update_lock_status()
+            event.accept()
+        
+        elif key == Qt.Key_Y:
+            self.dimension_locks['y'] = not self.dimension_locks['y']
+            self.raytracer.set_dimension_lock('y', self.dimension_locks['y'])
+            self.update_lock_status()
+            event.accept()
+        
+        elif key == Qt.Key_Z:
+            self.dimension_locks['z'] = not self.dimension_locks['z']
+            self.raytracer.set_dimension_lock('z', self.dimension_locks['z'])
+            self.update_lock_status()
+            event.accept()
+        
+        # Escape key to cancel operations
+        elif key == Qt.Key_Escape:
+            if self.dragging_object:
+                self.raytracer.stop_object_dragging()
+                self.dragging_object = False
+                self.dimension_locks = {'x': False, 'y': False, 'z': False}
+                self.update_lock_status()
+                
+                # Return to ray tracing if not manually in another mode
+                if not self.manual_mode_change:
+                    self.on_raytrace_mode()
+            elif self.raytracer.camera_rotating:
+                self.raytracer.stop_camera_rotation()
+                if not self.manual_mode_change:
+                    self.on_raytrace_mode()
             
+            event.accept()
+        
+        else:
+            super().keyPressEvent(event)
+    
+    def keyReleaseEvent(self, event):
+        """Handle key release with better state management"""
+        key = event.key()
+        
+        if key in self.camera_keys:
+            key_name = self.camera_keys[key]
+            if self.raytracer.camera_keys_pressed.get(key_name, False):
+                self.raytracer.set_camera_key_state(key_name, False)
+            event.accept()
+        else:
+            super().keyReleaseEvent(event)
+    
+    def update_lock_status(self):
+        """Update lock status display"""
+        locks = []
+        for dim, locked in self.dimension_locks.items():
+            if locked:
+                locks.append(dim.upper())
+        
+        if locks:
+            self.lock_label.setText(f"Locks: {', '.join(locks)}")
+            self.lock_label.setStyleSheet("color: #ff9900; font-weight: bold;")
+        else:
+            self.lock_label.setText("Locks: None")
+            self.lock_label.setStyleSheet("color: #888;")
+    
+    def get_lock_string(self):
+        """Get string representation of active locks"""
+        locks = [dim.upper() for dim, locked in self.dimension_locks.items() if locked]
+        return ', '.join(locks) if locks else "None"
+    
     def closeEvent(self, event):
         """Handle application close"""
         if self.render_thread:
             self.render_thread.stop()
+        self.raytracer.stop_rendering()
         event.accept()
-    
+
+def main():
+    """Main entry point"""
+    app = QApplication(sys.argv)
+    gui = GUI()
+    gui.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()

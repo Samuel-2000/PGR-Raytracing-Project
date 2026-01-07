@@ -121,10 +121,12 @@ def main():
         gui.show()
         
         print("Controls:")
-        print("- WASD/Arrow keys: Move selected object")
-        print("- Q/E: Move object up/down") 
-        print("- Left click + drag: Drag object in view plane")
-        print("- UI controls: Adjust rendering and material settings")
+        print("  Camera Movement: WASD + Space/Ctrl")
+        print("  Camera Rotation: Right Mouse Button + Drag")
+        print("  Object Selection: Left Click")
+        print("  Object Dragging: Hold X/Y/Z + Left Click + Drag")
+        print("  Cancel Operation: ESC")
+        print("  Mode Switching: Use buttons in top-left")
         print("=" * 50)
         
         sys.exit(app.exec_())
