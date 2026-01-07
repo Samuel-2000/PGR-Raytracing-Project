@@ -88,6 +88,7 @@ bool BVHNode::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
     return false;
 }
 
+/*
 bool BVH::box_compare(const Sphere& a, const Sphere& b, int axis) {
     AABB box_a = sphere_bounding_box(a);
     AABB box_b = sphere_bounding_box(b);
@@ -104,6 +105,22 @@ bool BVH::box_compare(const Sphere& a, const Sphere& b, int axis) {
     }
     else {
         return center_a.z < center_b.z;
+    }
+}
+*/
+
+bool BVH::box_compare(const Sphere& a, const Sphere& b, int axis) {
+    AABB box_a = sphere_bounding_box(a);
+    AABB box_b = sphere_bounding_box(b);
+    
+    if (axis == 0) {
+        return box_a.min.x < box_b.min.x;
+    }
+    else if (axis == 1) {
+        return box_a.min.y < box_b.min.y;
+    }
+    else {
+        return box_a.min.z < box_b.min.z;
     }
 }
 

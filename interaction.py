@@ -48,7 +48,7 @@ class Matrix3:
 class RayTracerInteraction:
     """C++ Ray Tracer with Full Interactive Controls"""
     
-    def __init__(self, width: int = 400, height: int = 300, debug_mode: bool = True):
+    def __init__(self, width: int = 400, height: int = 300, debug_mode: bool = False):
         self.width = width
         self.height = height
         
