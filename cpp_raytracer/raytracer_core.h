@@ -139,10 +139,21 @@ public:
         double ndc_y = (0.5 - v) * 2.0;  // Flip Y
         
         double tan_fov = std::tan(fov * 3.14159 / 360.0);
+        
+        // Compute camera basis vectors based on target
+        Vector3 forward = (target - position).normalize();
+        Vector3 right = forward.cross(Vector3(0, 1, 0)).normalize();
+        if (right.length() < 0.001) {
+            right = Vector3(1, 0, 0);
+        }
+        Vector3 up = right.cross(forward).normalize();
+        
+        // Scale by aspect ratio and FOV
         double view_x = ndc_x * aspect_ratio * tan_fov;
         double view_y = ndc_y * tan_fov;
         
-        Vector3 direction(view_x, view_y, -1.0);
+        // Compute ray direction
+        Vector3 direction = forward + (right * view_x) + (up * view_y);
         direction = direction.normalize();
         
         return Ray(position, direction);

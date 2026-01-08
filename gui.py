@@ -958,6 +958,14 @@ class GUI(QMainWindow):
             self.control_panel.target_x.blockSignals(False)
             self.control_panel.target_y.blockSignals(False)
             self.control_panel.target_z.blockSignals(False)
+            
+            # Sync the ray tracer camera with the interactive camera
+            rt_camera = self.raytracer.ray_tracer.get_camera()
+            if rt_camera:
+                rt_camera.position = camera.position
+                rt_camera.target = camera.target
+                rt_camera.up = camera.up
+                rt_camera.fov = camera.fov
     
     def on_raytrace_mode(self):
         """Switch to ray tracing mode"""

@@ -219,14 +219,24 @@ class RayTracerInteraction:
                 move_vector = move_vector - Vector3(0, speed, 0)
             
             if move_vector.length() > 0:
-                # Apply movement
+                # Apply movement to BOTH the camera and ray tracer camera
                 self.camera.position = self.camera.position + move_vector
                 self.camera.target = self.camera.target + move_vector
+                
+                # IMPORTANT: Also update the ray tracer's camera
+                self.ray_tracer.get_camera().position = self.camera.position
+                self.ray_tracer.get_camera().target = self.camera.target
                 
                 # Apply bounds to camera
                 self.camera.position.x = max(-20, min(20, self.camera.position.x))
                 self.camera.position.y = max(0.1, min(20, self.camera.position.y))
                 self.camera.position.z = max(-20, min(20, self.camera.position.z))
+                
+                # Also update ray tracer camera bounds
+                rt_camera = self.ray_tracer.get_camera()
+                rt_camera.position.x = max(-20, min(20, rt_camera.position.x))
+                rt_camera.position.y = max(0.1, min(20, rt_camera.position.y))
+                rt_camera.position.z = max(-20, min(20, rt_camera.position.z))
                 
                 self.update_camera_frame()
                 
@@ -234,12 +244,13 @@ class RayTracerInteraction:
                 if self.render_mode == RenderMode.RAYTRACING:
                     self.previous_render_mode = RenderMode.RAYTRACING
                 
-                # ALWAYS switch to wireframe during movement
+                # Switch to wireframe during movement (no ray tracing)
                 self.render_mode = RenderMode.WIREFRAME
+                self.is_rendering = False  # Stop ray tracing
                 
                 # Force a wireframe update without ray tracing
                 self._process_frame_for_display(0.05)
-    
+
     def start_camera_rotation(self, x: float, y: float):
         """Start camera rotation with mouse"""
         with self.render_lock:
@@ -252,11 +263,11 @@ class RayTracerInteraction:
             if self.render_mode == RenderMode.RAYTRACING:
                 self.previous_render_mode = RenderMode.RAYTRACING
             
-            # Switch to wireframe for responsiveness
+            # Switch to wireframe for responsiveness and stop ray tracing
             self.render_mode = RenderMode.WIREFRAME
+            self.is_rendering = False  # Stop ray tracing
             print(f"Camera rotation started, previous mode: {self.previous_render_mode}")
 
-    
     def update_camera_rotation(self, dx: float, dy: float):
         """Update camera rotation based on mouse movement"""
         if not self.camera_rotating:
@@ -284,8 +295,15 @@ class RayTracerInteraction:
                 pitch_rot = Matrix3.rotation_axis(right, pitch)
                 forward = pitch_rot * forward
             
-            # Update camera
-            self.camera.target = self.camera.position + forward
+            # Update BOTH cameras
+            new_target = self.camera.position + forward
+            self.camera.target = new_target
+            
+            # Also update the ray tracer's camera
+            rt_camera = self.ray_tracer.get_camera()
+            rt_camera.target = new_target
+            rt_camera.position = self.camera.position
+            
             self.update_camera_frame()
             
             # Force display update
@@ -324,20 +342,32 @@ class RayTracerInteraction:
             old_state = self.camera_keys_pressed[key]
             self.camera_keys_pressed[key] = state
             
-            # If key was just pressed and we're in ray tracing, switch to wireframe
+            # If key was just pressed and we're in ray tracing, switch to wireframe and stop ray tracing
             if state and not old_state:
+                # mark that an interaction is in progress (so the worker can manage returning to RT)
+                self.interaction_in_progress = True
+                self.last_interaction_time = time.time()
+
                 if self.render_mode == RenderMode.RAYTRACING and not self.camera_rotating:
                     self.previous_render_mode = RenderMode.RAYTRACING
                     self.render_mode = RenderMode.WIREFRAME
+                    self.is_rendering = False  # Stop ray tracing
                     # Force immediate update for responsiveness
                     self._process_frame_for_display(0.016)
-                
+
                 # Always trigger frame update on key press
                 self._process_frame_for_display(0.016)
             
             # If all keys released and not rotating, return to previous mode
             elif not state and not any(self.camera_keys_pressed.values()) and not self.camera_rotating:
                 if self.previous_render_mode == RenderMode.RAYTRACING:
+                    # Update ray tracer camera to match current camera
+                    rt_camera = self.ray_tracer.get_camera()
+                    rt_camera.position = self.camera.position
+                    rt_camera.target = self.camera.target
+                    rt_camera.up = self.camera.up
+                    rt_camera.fov = self.camera.fov   # <<< ADD THIS LINE
+
                     self.render_mode = RenderMode.RAYTRACING
                     self.restart_rendering()
                 else:
@@ -642,31 +672,31 @@ class RayTracerInteraction:
         self.silhouette_buffer.fill(0)
         width, height = self.width, self.height
         
-        # Use the exact same camera projection as the ray tracer
-        # This should match the camera.get_ray() method in C++
-        fov = self.camera.fov * 3.14159 / 180.0
+        # Use the same camera setup as in C++ Camera::get_ray()
+        camera = self.camera
+        fov = camera.fov * 3.14159 / 180.0
         aspect_ratio = width / height
-        tan_fov = np.tan(fov / 2.0)
+        tan_fov = math.tan(fov / 2.0)
         
-        # Camera orientation vectors
-        forward = (self.camera.target - self.camera.position).normalize()
+        # Camera basis vectors (same as in C++)
+        forward = (camera.target - camera.position).normalize()
         right = forward.cross(Vector3(0, 1, 0)).normalize()
         up = right.cross(forward).normalize()
         
         # Helper function to project 3D point to 2D screen
         def project_point(point: Vector3):
-            # Transform to camera space
-            obj_pos = point - self.camera.position
+            # Convert from world to camera space
+            obj_pos = point - camera.position
             
-            # Compute screen coordinates
+            # Compute coordinates in camera basis
             z_cam = obj_pos.dot(forward)
-            if z_cam <= 0.1:  # Behind or too close to camera
+            if z_cam <= 0.001:  # Behind or too close to camera
                 return None
             
             x_cam = obj_pos.dot(right)
             y_cam = obj_pos.dot(up)
             
-            # Apply perspective projection
+            # Apply perspective projection (same as C++ get_ray but inverted)
             x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
             y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
             
@@ -689,7 +719,6 @@ class RayTracerInteraction:
             x_screen, y_screen, z_cam = projected
             
             # Calculate projected radius using perspective
-            # Correct formula for perspective projection of sphere
             sphere_radius_pixels = (sphere.radius / (z_cam * tan_fov)) * height / 2.0
             radius = max(2, int(sphere_radius_pixels))
             
