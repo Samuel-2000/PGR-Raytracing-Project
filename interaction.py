@@ -1,3 +1,5 @@
+#interaction.py
+
 import numpy as np
 import time
 import threading
@@ -135,6 +137,9 @@ class RayTracerInteraction:
         self.camera_move_active = True
         self.camera_move_thread = threading.Thread(target=self._camera_move_worker, daemon=True)
         self.camera_move_thread.start()
+        self.interaction_in_progress = False
+        self.last_interaction_time = 0
+        self.interaction_timeout = 0.5  # 500ms timeout
         
         print(f"✓ Initialized Interactive Ray Tracer ({width}x{height})")
         print(f"  Controls: WASD+Space/Ctrl to move, Right Mouse to rotate")
@@ -156,17 +161,30 @@ class RayTracerInteraction:
     
     def _camera_move_worker(self):
         """Continuous camera movement worker thread with frame limiting"""
-        # Add import at top: from utils import FrameRateLimiter
-        limiter = FrameRateLimiter(30)  # Limit to 30 FPS
+        limiter = FrameRateLimiter(30)
         
         while self.camera_move_active:
             try:
-                # Only process if we should update based on frame rate
+                current_time = time.time()
+                
+                # Check if we should return to ray tracing after interaction timeout
+                if (self.interaction_in_progress and 
+                    current_time - self.last_interaction_time > self.interaction_timeout and
+                    not any(self.camera_keys_pressed.values()) and
+                    not self.camera_rotating):
+                    
+                    with self.render_lock:
+                        self.interaction_in_progress = False
+                        if self.render_mode != RenderMode.RAYTRACING and self.previous_render_mode == RenderMode.RAYTRACING:
+                            self.render_mode = RenderMode.RAYTRACING
+                            self.restart_rendering()
+                
+                # Process camera movement
                 if any(self.camera_keys_pressed.values()) and limiter.should_update():
                     self._process_camera_movement()
+                    self.last_interaction_time = current_time
                     limiter.update()
                 
-                # Small sleep to prevent CPU hogging
                 time.sleep(0.01)
                 
             except Exception as e:
@@ -176,6 +194,9 @@ class RayTracerInteraction:
     def _process_camera_movement(self):
         """Process continuous camera movement with bounds checking"""
         with self.render_lock:
+            if not any(self.camera_keys_pressed.values()):
+                return
+                
             move_vector = Vector3(0, 0, 0)
             speed = self.settings['camera_move_speed']
             
@@ -209,27 +230,32 @@ class RayTracerInteraction:
                 
                 self.update_camera_frame()
                 
-                # Store previous mode and switch to wireframe
+                # Store previous mode if we were in ray tracing
                 if self.render_mode == RenderMode.RAYTRACING:
                     self.previous_render_mode = RenderMode.RAYTRACING
-                    self.render_mode = RenderMode.WIREFRAME
                 
-                # Force a display update
+                # ALWAYS switch to wireframe during movement
+                self.render_mode = RenderMode.WIREFRAME
+                
+                # Force a wireframe update without ray tracing
                 self._process_frame_for_display(0.05)
     
     def start_camera_rotation(self, x: float, y: float):
         """Start camera rotation with mouse"""
         with self.render_lock:
             self.camera_rotating = True
+            self.interaction_in_progress = True
+            self.last_interaction_time = time.time()
             self.last_mouse_pos = (x, y)
             
             # Store previous mode
             if self.render_mode == RenderMode.RAYTRACING:
                 self.previous_render_mode = RenderMode.RAYTRACING
             
-            # Always switch to wireframe during rotation for responsiveness
+            # Switch to wireframe for responsiveness
             self.render_mode = RenderMode.WIREFRAME
             print(f"Camera rotation started, previous mode: {self.previous_render_mode}")
+
     
     def update_camera_rotation(self, dx: float, dy: float):
         """Update camera rotation based on mouse movement"""
@@ -237,6 +263,7 @@ class RayTracerInteraction:
             return
         
         with self.render_lock:
+            self.last_interaction_time = time.time()
             sensitivity = self.settings['camera_rotate_speed']
             yaw = -dx * sensitivity
             pitch = -dy * sensitivity
@@ -263,45 +290,60 @@ class RayTracerInteraction:
             
             # Force display update
             self._process_frame_for_display(0.05)
-    
+
     def stop_camera_rotation(self):
         """Stop camera rotation and return to previous mode"""
         with self.render_lock:
+            was_rotating = self.camera_rotating
             self.camera_rotating = False
             self.last_mouse_pos = None
             
             # Return to previous mode if it was raytracing
-            if self.previous_render_mode == RenderMode.RAYTRACING and self.render_mode == RenderMode.WIREFRAME:
+            if was_rotating and self.previous_render_mode == RenderMode.RAYTRACING:
+                # Reset interaction state
+                self.interaction_in_progress = False
+                
+                # Short delay before returning to ray tracing
+                time.sleep(0.05)
+                
+                # Switch back to ray tracing
                 self.render_mode = RenderMode.RAYTRACING
                 print("Camera rotation stopped, returning to ray tracing")
-                # Trigger a restart of rendering
+                
+                # Restart ray tracing
                 self.restart_rendering()
-            else:
-                # Stay in current mode (wireframe or silhouette)
-                print(f"Camera rotation stopped, staying in {self.render_mode}")
+            
+            elif was_rotating:
+                # Return to whatever mode we were in before
+                self.render_mode = self.previous_render_mode
+                self._process_frame_for_display(0.016)
     
     def set_camera_key_state(self, key: str, state: bool):
-        """Update camera key state with debouncing"""
+        """Update camera key state with better mode management"""
         if key in self.camera_keys_pressed:
             old_state = self.camera_keys_pressed[key]
             self.camera_keys_pressed[key] = state
             
-            # If key was just pressed, store previous mode
-            if state and not old_state and self.render_mode == RenderMode.RAYTRACING:
-                self.previous_render_mode = RenderMode.RAYTRACING
+            # If key was just pressed and we're in ray tracing, switch to wireframe
+            if state and not old_state:
+                if self.render_mode == RenderMode.RAYTRACING and not self.camera_rotating:
+                    self.previous_render_mode = RenderMode.RAYTRACING
+                    self.render_mode = RenderMode.WIREFRAME
+                    # Force immediate update for responsiveness
+                    self._process_frame_for_display(0.016)
+                
+                # Always trigger frame update on key press
+                self._process_frame_for_display(0.016)
             
-            # If any movement key is pressed, switch to wireframe for responsiveness
-            if state and self.render_mode == RenderMode.RAYTRACING:
-                self.render_mode = RenderMode.WIREFRAME
-                self._process_frame_for_display(0.05)
-            
-            # If all keys released and not rotating, return to ray tracing
+            # If all keys released and not rotating, return to previous mode
             elif not state and not any(self.camera_keys_pressed.values()) and not self.camera_rotating:
                 if self.previous_render_mode == RenderMode.RAYTRACING:
                     self.render_mode = RenderMode.RAYTRACING
                     self.restart_rendering()
-                # Reset the last update time
-                self.camera_last_update_time = 0
+                else:
+                    # Stay in current mode if previous wasn't ray tracing
+                    self.render_mode = self.previous_render_mode
+                    self._process_frame_for_display(0.016)
     
     def create_interactive_scene(self) -> Scene:
         """Create a scene with interactive objects"""
@@ -596,48 +638,63 @@ class RayTracerInteraction:
         self.is_rendering = False
     
     def _render_silhouette(self) -> np.ndarray:
-        """Render silhouette view for fast object editing"""
+        """Render silhouette view for fast object editing with proper camera projection"""
         self.silhouette_buffer.fill(0)
         width, height = self.width, self.height
         
-        # Camera parameters
+        # Use the exact same camera projection as the ray tracer
+        # This should match the camera.get_ray() method in C++
         fov = self.camera.fov * 3.14159 / 180.0
         aspect_ratio = width / height
         tan_fov = np.tan(fov / 2.0)
         
+        # Camera orientation vectors
         forward = (self.camera.target - self.camera.position).normalize()
         right = forward.cross(Vector3(0, 1, 0)).normalize()
         up = right.cross(forward).normalize()
         
-        for sphere in self.scene.spheres:
-            if sphere.object_id == 0:  # Skip ground
-                continue
-            
+        # Helper function to project 3D point to 2D screen
+        def project_point(point: Vector3):
             # Transform to camera space
-            obj_pos = sphere.center - self.camera.position
-            z_cam = obj_pos.dot(forward)
+            obj_pos = point - self.camera.position
             
+            # Compute screen coordinates
+            z_cam = obj_pos.dot(forward)
             if z_cam <= 0.1:  # Behind or too close to camera
-                continue
+                return None
             
             x_cam = obj_pos.dot(right)
             y_cam = obj_pos.dot(up)
             
-            # Correct perspective projection (matches ray tracer)
+            # Apply perspective projection
             x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
-            # Fix Y axis inversion to match ray tracer
             y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
-            
-            # Calculate projected radius
-            radius_screen = (sphere.radius / (z_cam * tan_fov)) * height / 2.0
             
             # Clamp to screen bounds
             x_screen = max(0, min(width - 1, x_screen))
             y_screen = max(0, min(height - 1, y_screen))
             
+            return (int(x_screen), int(y_screen), z_cam)
+        
+        # Render all spheres
+        for sphere in self.scene.spheres:
+            if sphere.object_id == 0:  # Skip ground
+                continue
+            
+            # Project sphere center
+            projected = project_point(sphere.center)
+            if projected is None:
+                continue
+                
+            x_screen, y_screen, z_cam = projected
+            
+            # Calculate projected radius using perspective
+            # Correct formula for perspective projection of sphere
+            sphere_radius_pixels = (sphere.radius / (z_cam * tan_fov)) * height / 2.0
+            radius = max(2, int(sphere_radius_pixels))
+            
             if 0 <= x_screen < width and 0 <= y_screen < height:
                 center = (int(x_screen), int(y_screen))
-                radius = max(2, int(radius_screen))
                 
                 # Color coding
                 if sphere.object_id == self.selected_object_id:

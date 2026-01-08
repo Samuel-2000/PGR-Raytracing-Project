@@ -1,3 +1,5 @@
+#gui.py
+
 import sys
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -648,6 +650,10 @@ class GUI(QMainWindow):
         
         self.setup_ui()
         self.setup_rendering()
+
+        self.camera_update_timer = QTimer()
+        self.camera_update_timer.timeout.connect(self.update_camera_controls)
+        self.camera_update_timer.start(100)  # Update every 100ms
     
     def setup_ui(self):
         """Setup the main UI"""
@@ -921,6 +927,37 @@ class GUI(QMainWindow):
         self.render_thread.frame_ready.connect(self.on_frame_ready)
         self.render_thread.rendering_finished.connect(self.on_rendering_finished)
         self.render_thread.start()
+
+    def update_camera_controls(self):
+        """Update camera control values from current camera state"""
+        if self.raytracer.camera:
+            camera = self.raytracer.camera
+            
+            # Update position controls
+            self.control_panel.cam_x.blockSignals(True)
+            self.control_panel.cam_y.blockSignals(True)
+            self.control_panel.cam_z.blockSignals(True)
+            
+            self.control_panel.cam_x.setValue(camera.position.x)
+            self.control_panel.cam_y.setValue(camera.position.y)
+            self.control_panel.cam_z.setValue(camera.position.z)
+            
+            self.control_panel.cam_x.blockSignals(False)
+            self.control_panel.cam_y.blockSignals(False)
+            self.control_panel.cam_z.blockSignals(False)
+            
+            # Update target controls
+            self.control_panel.target_x.blockSignals(True)
+            self.control_panel.target_y.blockSignals(True)
+            self.control_panel.target_z.blockSignals(True)
+            
+            self.control_panel.target_x.setValue(camera.target.x)
+            self.control_panel.target_y.setValue(camera.target.y)
+            self.control_panel.target_z.setValue(camera.target.z)
+            
+            self.control_panel.target_x.blockSignals(False)
+            self.control_panel.target_y.blockSignals(False)
+            self.control_panel.target_z.blockSignals(False)
     
     def on_raytrace_mode(self):
         """Switch to ray tracing mode"""
@@ -967,13 +1004,16 @@ class GUI(QMainWindow):
         self.main_display.set_image(frame_data['display'])
         self.enhanced_display.set_image(frame_data['enhanced'])
         
-        # Update denoiser displays
+        # Update denoiser displays if needed
         if 'denoised' in frame_data:
             for method, image in frame_data['denoised'].items():
                 if method in self.denoiser_displays:
                     self.denoiser_displays[method].set_image(image)
         
-        # Update status
+        # Update camera controls
+        self.update_camera_controls()
+        
+        # Update status (rest of existing code remains the same)
         mode = frame_data.get('mode', 'raytracing')
         if mode == 'wireframe':
             status = "Wireframe Mode - Right Drag to Rotate, WASD to Move"
@@ -1077,22 +1117,20 @@ class GUI(QMainWindow):
             self.control_panel.update_object_info()
             self.control_panel.update_material_sliders()
             
-            # Only return to ray tracing if we weren't manually in another mode
-            if not self.manual_mode_change and self.raytracer.render_mode != RenderMode.RAYTRACING:
-                self.on_raytrace_mode()
+            # Always return to ray tracing after dragging
+            self.on_raytrace_mode()
         
         elif button == Qt.RightButton:
             self.raytracer.stop_camera_rotation()
-            # Return to ray tracing only if it was the previous mode and not manually changed
-            if (self.raytracer.previous_render_mode == RenderMode.RAYTRACING and 
-                not self.manual_mode_change and
-                self.raytracer.render_mode != RenderMode.RAYTRACING):
-                self.on_raytrace_mode()
+            # Always return to ray tracing after camera rotation
+            self.on_raytrace_mode()
     
     
     def keyPressEvent(self, event):
         """Handle keyboard input with better debouncing"""
         key = event.key()
+
+        self.manual_mode_change = False
         
         # Camera movement keys
         if key in self.camera_keys:
@@ -1181,12 +1219,3 @@ class GUI(QMainWindow):
         self.raytracer.stop_rendering()
         event.accept()
 
-def main():
-    """Main entry point"""
-    app = QApplication(sys.argv)
-    gui = GUI()
-    gui.show()
-    sys.exit(app.exec_())
-
-if __name__ == "__main__":
-    main()
