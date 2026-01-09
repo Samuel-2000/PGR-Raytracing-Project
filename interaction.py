@@ -664,12 +664,12 @@ class RayTracerInteraction:
         obj = self.get_selected_object()
         if not obj:
             return
-        obj.material.albedo = Vector3(b, g, r)
+        obj.material.albedo = Vector3(r, g, b)
         # ak je light, udržiavať intenzitu
         if hasattr(obj.material, 'emission'):
             if (obj.material.emission.x + obj.material.emission.y + obj.material.emission.z) > 0.001:
                 avg = (obj.material.emission.x + obj.material.emission.y + obj.material.emission.z) / 3.0
-                obj.material.emission = Vector3(b * avg, g * avg, r * avg)
+                obj.material.emission = Vector3(r * avg, g * avg, b * avg)
 
         if apply_immediate:
             self.ray_tracer.set_scene(self.scene)
