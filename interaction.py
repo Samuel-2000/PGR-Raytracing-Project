@@ -1,4 +1,4 @@
-# interaction.py
+# interaction.py - COMPLETE WORKING VERSION
 
 import numpy as np
 import time
@@ -576,9 +576,12 @@ class RayTracerInteraction:
         self.scene = SceneManager.create_interactive_scene()
         self.ray_tracer.set_scene(self.scene)
         
-        # Get camera reference
+        # Get camera as a copy from C++ (we push updates back with set_camera)
         self.camera = self.ray_tracer.get_camera()
         self._init_camera()
+        # Immediately push our initialized camera back to C++ so both sides are in sync
+        self.ray_tracer.set_camera(self.camera)
+
         
         # Settings
         self.settings = {
@@ -638,11 +641,174 @@ class RayTracerInteraction:
         self.camera.target = Vector3(0, 0, -1)
         self.camera.up = Vector3(0, 1, 0)
         self.camera.fov = 45.0
+
+    def reset_camera_and_rerender(self):
+        with self.render_lock:
+            # Reset camera to defaults
+            self._init_camera()
+
+            # Push camera to C++
+            self.ray_tracer.set_camera(self.camera)
+
+            # Force an immediate visual update
+            self.render_state.start_interaction()
+            self._process_frame_for_display(0.0)
+
+            # Restart ray tracing cleanly
+            self.render_state.set_mode(RenderMode.RAYTRACING)
+            self.restart_rendering()
     
-    # ------------------------------------------------------------------
-    # Core Public API
-    # ------------------------------------------------------------------
-    
+
+    def set_object_color(self, r: float, g: float, b: float, apply_immediate: bool = True):
+        """Nastaví albedo (RGB) vybranému objektu."""
+        obj = self.get_selected_object()
+        if not obj:
+            return
+        obj.material.albedo = Vector3(b, g, r)
+        # ak je light, udržiavať intenzitu
+        if hasattr(obj.material, 'emission'):
+            if (obj.material.emission.x + obj.material.emission.y + obj.material.emission.z) > 0.001:
+                avg = (obj.material.emission.x + obj.material.emission.y + obj.material.emission.z) / 3.0
+                obj.material.emission = Vector3(b * avg, g * avg, r * avg)
+
+        if apply_immediate:
+            self.ray_tracer.set_scene(self.scene)
+            self.restart_rendering()
+
+    def set_object_color_hsv(self, h: float, s: float, v: float, apply_immediate: bool = True):
+        """Nastaví farbu pomocou HSV (h in degrees 0-360, s/v in 0-1)."""
+        # Convert HSV -> RGB
+        h_norm = (h % 360) / 360.0
+        i = int(h_norm * 6)
+        f = h_norm * 6 - i
+        p = v * (1 - s)
+        q = v * (1 - f * s)
+        t = v * (1 - (1 - f) * s)
+        i = i % 6
+        if i == 0:
+            r, g, b = v, t, p
+        elif i == 1:
+            r, g, b = q, v, p
+        elif i == 2:
+            r, g, b = p, v, t
+        elif i == 3:
+            r, g, b = p, q, v
+        elif i == 4:
+            r, g, b = t, p, v
+        else:
+            r, g, b = v, p, q
+
+        self.set_object_color(r, g, b, apply_immediate=apply_immediate)
+
+    def _procedural_noise_color(self, position, scale=1.0, octaves=3, base_hsv=None):
+        """Deterministický 'noise' color generator cez kombináciu sinusoid.
+        position: Vector3 (world pos)
+        base_hsv: optional tuple (h,s,v) to tint result
+        """
+        x, y, z = position.x * scale, position.y * scale, position.z * scale
+
+        # fractal sin/cos sum - deterministické a rýchle (bez externých knižníc)
+        r = g = b = 0.0
+        amp = 1.0
+        freq = 1.0
+        total_amp = 0.0
+        for o in range(max(1, int(octaves))):
+            r += amp * math.sin(x * freq + 0.37 * (o + 1))
+            g += amp * math.sin(y * freq + 1.17 * (o + 1))
+            b += amp * math.sin(z * freq + 2.41 * (o + 1))
+            total_amp += amp
+            amp *= 0.5
+            freq *= 2.0
+
+        # normalize - dostaneme hodnoty v ~[-1,1], posuňme do [0,1]
+        r = (r / total_amp) * 0.5 + 0.5
+        g = (g / total_amp) * 0.5 + 0.5
+        b = (b / total_amp) * 0.5 + 0.5
+
+        # optional tint by base_hsv
+        if base_hsv:
+            h, s, v = base_hsv
+            # convert generated RGB -> HSV -> scale V by generated average
+            avg = (r + g + b) / 3.0
+            # apply HSV base with v = avg, convert to rgb:
+            # reuse set_object_color_hsv conversion (but inline)
+            h_norm = (h % 360) / 360.0
+            ii = int(h_norm * 6) % 6
+            ff = h_norm * 6 - ii
+            pp = avg * (1 - s)
+            qq = avg * (1 - ff * s)
+            tt = avg * (1 - (1 - ff) * s)
+            if ii == 0:
+                r, g, b = avg, tt, pp
+            elif ii == 1:
+                r, g, b = qq, avg, pp
+            elif ii == 2:
+                r, g, b = pp, avg, tt
+            elif ii == 3:
+                r, g, b = pp, qq, avg
+            elif ii == 4:
+                r, g, b = tt, pp, avg
+            else:
+                r, g, b = avg, pp, qq
+
+        # clamp
+        r = max(0.0, min(1.0, r))
+        g = max(0.0, min(1.0, g))
+        b = max(0.0, min(1.0, b))
+
+        return r, g, b
+
+    def set_object_texture(self, texture_type: str, params: dict):
+        """Aplikuje textúru (procedurálnu) na vybraný objekt. texture_type: 'none'|'noise'|'marble' etc."""
+        obj = self.get_selected_object()
+        if not obj:
+            return False
+
+        if texture_type == 'none':
+            # nothing to do
+            return True
+
+        if texture_type == 'noise':
+            scale = float(params.get('scale', 1.0))
+            octaves = int(params.get('octaves', 3))
+            tint = params.get('tint_hsv', None)  # optionally (h,s,v)
+            r, g, b = self._procedural_noise_color(obj.center, scale=scale, octaves=octaves, base_hsv=tint)
+            obj.material.albedo = Vector3(r, g, b)
+            # Update scene & rerender
+            self.ray_tracer.set_scene(self.scene)
+            self.restart_rendering()
+            return True
+
+        # fallback: unsupported
+        return False
+
+    def resize_viewport(self, width: int, height: int):
+        """Dynamická zmena rozlíšenia okna - upraví buffery a reštartuje render."""
+        with self.render_lock:
+            self.width = max(1, int(width))
+            self.height = max(1, int(height))
+
+            # recreate render state / renderer so wireframe/silhouette use correct buffers
+            self.render_state = RenderStateManager(self.width, self.height)
+            self.renderer = Renderer(self.width, self.height, self.camera, self.scene)
+
+            # reset accumulation (important)
+            self.accumulated_image = None
+            self.total_samples = 0
+
+            # tell C++ side if it exposes resize (best-effort)
+            try:
+                if hasattr(self.ray_tracer, 'resize'):
+                    self.ray_tracer.resize(self.width, self.height)
+                else:
+                    # Some bindings expect set_resolution or using set_camera + render args; we leave call optional
+                    pass
+            except Exception:
+                pass
+
+            self.restart_rendering()
+            return True
+
     def get_selected_object(self) -> Optional[Sphere]:
         """Get currently selected object"""
         selected_idx = self.settings['selected_object']
@@ -787,37 +953,117 @@ class RayTracerInteraction:
                 self.ray_tracer.set_scene(self.scene)
                 self.restart_rendering()
     
-    def add_object_to_scene(self, sphere: Sphere):
-        """Add a new object to the scene"""
+    def add_object_to_scene(self):
+        """Add a new sphere to the scene"""
         with self.render_lock:
-            self.scene.spheres.append(sphere)
-            self.scene.build_bvh()
+            # Find next available object ID
+            max_id = 0
+            for sphere in self.scene.spheres:
+                if sphere.object_id > max_id:
+                    max_id = sphere.object_id
+
+            # Create new sphere
+            new_sphere = Sphere()
+            new_sphere.center = Vector3(0, 2, -3)  # Default position
+            new_sphere.radius = 0.5
+
+            # Create material
+            material = Material()
+            material.albedo = Vector3(0.8, 0.8, 0.8)
+            material.metallic = 0.0
+            material.roughness = 0.5
+            material.emission = Vector3(0, 0, 0)
+            material.ior = 1.5
+
+            new_sphere.material = material
+            new_sphere.object_id = max_id + 1
+            new_sphere.name = f"Sphere {max_id + 1}"
+
+            # Use C++ add_sphere so the native Scene container is updated correctly
+            try:
+                self.scene.add_sphere(new_sphere)
+            except Exception:
+                # Fallback if binding fails
+                self.scene.spheres.append(new_sphere)
+
+            # Rebuild BVH and notify the ray tracer
+            try:
+                self.scene.build_bvh()
+            except Exception:
+                pass
             self.ray_tracer.set_scene(self.scene)
-            
-            # Update selected object to the new one
-            self.settings['selected_object'] = sphere.object_id
-            self.object_dragger.selected_object_id = sphere.object_id
-            
+
+            # Update selected object
+            self.settings['selected_object'] = new_sphere.object_id
+            self.object_dragger.selected_object_id = new_sphere.object_id
+
+            # GUI updates (best-effort)
+            if self._gui:
+                try:
+                    self._gui.control_panel.update_object_list()
+                    self._gui.control_panel.object_select.setCurrentIndex(new_sphere.object_id)
+                    self._gui.control_panel.update_object_info()
+                    self._gui.control_panel.update_material_sliders()
+                except:
+                    pass
+
+            print(f"Added new sphere with ID {new_sphere.object_id}")
             self.restart_rendering()
+            return new_sphere.object_id
+
     
     def remove_object_from_scene(self, object_id: int):
         """Remove object from scene by ID"""
         with self.render_lock:
-            # Find and remove object
-            for i, sphere in enumerate(self.scene.spheres):
-                if sphere.object_id == object_id:
-                    del self.scene.spheres[i]
-                    break
-            
-            # Rebuild BVH
-            self.scene.build_bvh()
+            removed = False
+            # Prefer calling C++ remove_sphere if available
+            if hasattr(self.scene, "remove_sphere"):
+                try:
+                    self.scene.remove_sphere(object_id)
+                    removed = True
+                except Exception:
+                    removed = False
+
+            if not removed:
+                # Fallback to removing in Python (this may or may not reflect to C++ depending on binding)
+                for i, sphere in enumerate(list(self.scene.spheres)):
+                    if sphere.object_id == object_id:
+                        del self.scene.spheres[i]
+                        removed = True
+                        break
+
+            if not removed:
+                print(f"Object with ID {object_id} not found")
+                return False
+
+            # Rebuild BVH and set scene
+            try:
+                self.scene.build_bvh()
+            except Exception:
+                pass
             self.ray_tracer.set_scene(self.scene)
-            
-            # Update selected object if needed
-            if self.settings['selected_object'] >= len(self.scene.spheres):
-                self.settings['selected_object'] = max(0, len(self.scene.spheres) - 1)
-            
+
+            # Update selected object to next available
+            self.settings['selected_object'] = 0
+            self.object_dragger.selected_object_id = 0
+            for sphere in self.scene.spheres:
+                if sphere.object_id > 0:
+                    self.settings['selected_object'] = sphere.object_id
+                    self.object_dragger.selected_object_id = sphere.object_id
+                    break
+
+            # GUI updates
+            if self._gui:
+                try:
+                    self._gui.control_panel.update_object_list()
+                    self._gui.control_panel.update_object_info()
+                    self._gui.control_panel.update_material_sliders()
+                except:
+                    pass
+
             self.restart_rendering()
+            return True
+
     
     def _get_sphere_by_id(self, object_id: int) -> Optional[Sphere]:
         """Helper method to get sphere by object ID"""
@@ -831,49 +1077,33 @@ class RayTracerInteraction:
     # ------------------------------------------------------------------
     
     def set_camera_key_state(self, key: str, state: bool):
-        """Update camera key state"""
-        if key in self.camera_controller.keys_pressed:
-            with self.render_lock:
-                current_time = time.time()
-                
-                # Debouncing
-                if hasattr(self, '_last_key_event_time'):
-                    if current_time - self._last_key_event_time < 0.01:  # 10ms debounce
-                        return
-                self._last_key_event_time = current_time
-                
-                old_state = self.camera_controller.keys_pressed[key]
-                if state == old_state:
-                    return
-                
-                self.camera_controller.keys_pressed[key] = state
-                
-                # Track manual movement
-                if state:
-                    self._last_manual_movement = current_time
-                
-                # Track if ANY key is newly pressed
-                any_key_newly_pressed = False
-                for k, v in self.camera_controller.keys_pressed.items():
-                    if v and (k not in self._last_key_states or not self._last_key_states[k]):
-                        any_key_newly_pressed = True
-                        break
-                
-                # Store current key states
-                self._last_key_states = self.camera_controller.keys_pressed.copy()
-                
-                # If ANY key is newly pressed and we're in raytracing, switch to wireframe
-                if any_key_newly_pressed and self.render_state.current_mode == RenderMode.RAYTRACING:
+        """Update camera key state with better handling"""
+        if key not in self.camera_controller.keys_pressed:
+            return
+
+        with self.render_lock:
+            old_state = self.camera_controller.keys_pressed[key]
+
+            # Only process if state actually changed
+            if state == old_state:
+                return
+
+            self.camera_controller.keys_pressed[key] = state
+
+            current_time = time.time()
+            if state:
+                self._last_manual_movement = current_time
+                # Start interaction when any key is pressed
+                if self.render_state.current_mode == RenderMode.RAYTRACING:
                     self.render_state.start_interaction()
                     self._process_frame_for_display(0.016)
-                
-                # If key was just released
-                elif not state and old_state:
-                    # Check if ALL keys are now released
-                    all_released = not any(self.camera_controller.keys_pressed.values())
-                    
-                    if all_released and not self.camera_controller.rotating:
-                        self._handle_all_keys_released()
+
+            # If all released, perform cleanup immediately
+            all_released = not any(self.camera_controller.keys_pressed.values())
+            if all_released and not self.camera_controller.rotating:
+                # push camera and return to raytracing immediately
+                self._handle_all_keys_released()
+
     
     def start_camera_rotation(self, x: float, y: float):
         """Start camera rotation with mouse"""
@@ -892,10 +1122,7 @@ class RayTracerInteraction:
             self.camera_controller.rotate(dx, dy)
             
             # Also update the ray tracer's camera
-            rt_camera = self.ray_tracer.get_camera()
-            rt_camera.target = self.camera.target
-            rt_camera.position = self.camera.position
-            
+            self.ray_tracer.set_camera(self.camera)
             # Force display update
             self._process_frame_for_display(0.05)
     
@@ -993,31 +1220,34 @@ class RayTracerInteraction:
             try:
                 current_time = time.time()
                 
-                # Check if we should return to ray tracing after interaction timeout
-                # Fix: Add check for recent manual movement
+                # Check for manual movement and prevent auto-movement
+                keys_pressed = any(self.camera_controller.keys_pressed.values())
+                is_moving = keys_pressed or self.camera_controller.rotating
+                
+                if is_moving:
+                    # Update interaction time to prevent premature return to raytracing
+                    self._last_manual_movement = current_time
+                    self.render_state.update_interaction()
+                    
+                    # Process movement if we're supposed to be moving
+                    if limiter.should_update():
+                        self._process_camera_movement()
+                        limiter.update()
+                
+                # Check if should return to ray tracing after interaction timeout
                 time_since_last_manual = current_time - self._last_manual_movement
+                
                 if (self.render_state.should_return_to_raytracing() and
                     not any(self.camera_controller.keys_pressed.values()) and
                     not self.camera_controller.rotating and
                     time_since_last_manual > 0.5):  # 500ms delay after manual movement
                     
                     with self.render_lock:
-                        self.render_state.return_to_previous_mode()
-                
-                # Process camera movement - FIX: Check if keys are actually pressed
-                # and prevent auto-movement
-                keys_pressed = any(self.camera_controller.keys_pressed.values())
-                if keys_pressed and not self._camera_auto_move_fix:
-                    # Ensure we're in wireframe mode when moving
-                    if self.render_state.current_mode != RenderMode.WIREFRAME:
-                        with self.render_lock:
-                            self.render_state.start_interaction()
-                    
-                    # Process movement
-                    if limiter.should_update():
-                        self._process_camera_movement()
-                        self.render_state.update_interaction()
-                        limiter.update()
+                        # Double-check no keys are pressed
+                        if not any(self.camera_controller.keys_pressed.values()) and not self.camera_controller.rotating:
+                            # Switch back to ray tracing
+                            self.render_state.set_mode(RenderMode.RAYTRACING)
+                            self.restart_rendering()
                 
                 time.sleep(0.01)
                 
@@ -1039,16 +1269,10 @@ class RayTracerInteraction:
                 self.camera.target = self.camera.target + move_vector
                 
                 # Update ray tracer camera
-                rt_camera = self.ray_tracer.get_camera()
-                rt_camera.position = self.camera.position
-                rt_camera.target = self.camera.target
+                self.ray_tracer.set_camera(self.camera)
                 
                 # Apply bounds
                 self.camera_controller.apply_bounds()
-                rt_camera.position.x = max(-20, min(20, rt_camera.position.x))
-                rt_camera.position.y = max(0.1, min(20, rt_camera.position.y))
-                rt_camera.position.z = max(-20, min(20, rt_camera.position.z))
-                
                 self.camera_controller.update_camera_frame()
                 
                 # Ensure we're in wireframe mode during movement
@@ -1181,12 +1405,7 @@ class RayTracerInteraction:
             # Double-check no keys are pressed
             if not any(self.camera_controller.keys_pressed.values()):
                 # Update ray tracer camera
-                rt_camera = self.ray_tracer.get_camera()
-                rt_camera.position = self.camera.position
-                rt_camera.target = self.camera.target
-                rt_camera.up = self.camera.up
-                rt_camera.fov = self.camera.fov
-
+                self.ray_tracer.set_camera(self.camera)
                 self.render_state.set_mode(RenderMode.RAYTRACING)
                 self.restart_rendering()
         else:

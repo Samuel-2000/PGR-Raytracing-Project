@@ -1,10 +1,9 @@
-# gui.py
-
 import sys
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QSlider, QCheckBox, QComboBox, QLabel, QPushButton,
-                             QTabWidget, QSplitter, QProgressBar, QSpinBox, QDoubleSpinBox)
+                             QTabWidget, QSplitter, QProgressBar, QSpinBox, QDoubleSpinBox,
+                             QColorDialog, QLineEdit, QFormLayout)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QKeyEvent
 import cv2
@@ -447,48 +446,129 @@ class ControlPanel(QWidget):
         """Create material controls with delayed updates"""
         group = QGroupBox("Material Properties")
         layout = QVBoxLayout()
-        
-        # Albedo (color) controls - FIXED ORDER: R, G, B
+
+        # --- existing color sliders ---
         color_group = QGroupBox("Color")
         color_layout = QVBoxLayout()
-        
         # Red
         r_layout = QHBoxLayout()
         r_layout.addWidget(QLabel("R:"))
         self.color_r = QSlider(Qt.Horizontal)
-        self.color_r.setRange(0, 100)
-        self.color_r.setValue(90)
+        self.color_r.setRange(0, 255)
+        self.color_r.setValue(230)
         self.color_r.sliderReleased.connect(self.on_material_slider_released)
         self.color_r.valueChanged.connect(self.on_material_value_changed)
         r_layout.addWidget(self.color_r)
         color_layout.addLayout(r_layout)
-        
+
         # Green
         g_layout = QHBoxLayout()
         g_layout.addWidget(QLabel("G:"))
         self.color_g = QSlider(Qt.Horizontal)
-        self.color_g.setRange(0, 100)
-        self.color_g.setValue(90)
+        self.color_g.setRange(0, 255)
+        self.color_g.setValue(25)
         self.color_g.sliderReleased.connect(self.on_material_slider_released)
         self.color_g.valueChanged.connect(self.on_material_value_changed)
         g_layout.addWidget(self.color_g)
         color_layout.addLayout(g_layout)
-        
+
         # Blue
         b_layout = QHBoxLayout()
         b_layout.addWidget(QLabel("B:"))
         self.color_b = QSlider(Qt.Horizontal)
-        self.color_b.setRange(0, 100)
-        self.color_b.setValue(90)
+        self.color_b.setRange(0, 255)
+        self.color_b.setValue(25)
         self.color_b.sliderReleased.connect(self.on_material_slider_released)
         self.color_b.valueChanged.connect(self.on_material_value_changed)
         b_layout.addWidget(self.color_b)
         color_layout.addLayout(b_layout)
-        
+
+        # Color picker button (opens QColorDialog)
+        pick_btn = QPushButton("Open Color Picker")
+        pick_btn.clicked.connect(self.open_color_picker)
+        color_layout.addWidget(pick_btn)
+
         color_group.setLayout(color_layout)
         layout.addWidget(color_group)
-        
-        # Metallic with delayed update
+
+        # --- HSV picker group ---
+        hsv_group = QGroupBox("HSV Picker")
+        hsv_layout = QFormLayout()
+        self.h_slider = QSlider(Qt.Horizontal); self.h_slider.setRange(0, 360); self.h_slider.setValue(0)
+        self.s_slider = QSlider(Qt.Horizontal); self.s_slider.setRange(0, 100); self.s_slider.setValue(100)
+        self.v_slider = QSlider(Qt.Horizontal); self.v_slider.setRange(0, 100); self.v_slider.setValue(90)
+        for s in (self.h_slider, self.s_slider, self.v_slider):
+            s.valueChanged.connect(self.on_hsv_changed)
+        hsv_layout.addRow("Hue", self.h_slider)
+        hsv_layout.addRow("Saturation", self.s_slider)
+        hsv_layout.addRow("Value", self.v_slider)
+        apply_hsv_btn = QPushButton("Apply HSV to Selected")
+        apply_hsv_btn.clicked.connect(self.apply_hsv_to_selected)
+        hsv_layout.addRow(apply_hsv_btn)
+        hsv_group.setLayout(hsv_layout)
+        layout.addWidget(hsv_group)
+
+        # --- Texture / Material selection ---
+        tex_group = QGroupBox("Texture / Material")
+        tex_layout = QVBoxLayout()
+
+        tex_row = QHBoxLayout()
+        tex_row.addWidget(QLabel("Type:"))
+        self.texture_select = QComboBox()
+        self.texture_select.addItems(["none", "noise"])
+        self.texture_select.currentTextChanged.connect(self.on_texture_type_changed)
+        tex_row.addWidget(self.texture_select)
+        tex_layout.addLayout(tex_row)
+
+        # texture parameters
+        param_row = QHBoxLayout()
+        param_row.addWidget(QLabel("Scale:"))
+        self.tex_scale = QDoubleSpinBox()
+        self.tex_scale.setRange(0.01, 10.0)
+        self.tex_scale.setSingleStep(0.1)
+        self.tex_scale.setValue(1.0)
+        param_row.addWidget(self.tex_scale)
+        param_row.addWidget(QLabel("Octaves:"))
+        self.tex_octaves = QSpinBox()
+        self.tex_octaves.setRange(1, 8)
+        self.tex_octaves.setValue(3)
+        param_row.addWidget(self.tex_octaves)
+        tex_layout.addLayout(param_row)
+
+        # optional tint via HSV
+        tint_row = QHBoxLayout()
+        tint_row.addWidget(QLabel("Tint H:"))
+        self.tint_h = QSpinBox(); self.tint_h.setRange(0, 360); self.tint_h.setValue(0)
+        tint_row.addWidget(self.tint_h)
+        tint_row.addWidget(QLabel("S:"))
+        self.tint_s = QSpinBox(); self.tint_s.setRange(0, 100); self.tint_s.setValue(0)
+        tint_row.addWidget(self.tint_s)
+        tex_layout.addLayout(tint_row)
+
+        # Apply texture button
+        apply_tex_btn = QPushButton("Apply Texture to Selected")
+        apply_tex_btn.clicked.connect(self.apply_texture_to_selected)
+        tex_layout.addWidget(apply_tex_btn)
+
+        tex_group.setLayout(tex_layout)
+        layout.addWidget(tex_group)
+
+        # --- Resolution controls ---
+        res_group = QGroupBox("Viewport Resolution")
+        res_layout = QHBoxLayout()
+        self.res_w = QLineEdit(str(self.raytracer.width))
+        self.res_h = QLineEdit(str(self.raytracer.height))
+        res_layout.addWidget(QLabel("W:")); res_layout.addWidget(self.res_w)
+        res_layout.addWidget(QLabel("H:")); res_layout.addWidget(self.res_h)
+        apply_res_btn = QPushButton("Apply Resolution")
+        apply_res_btn.clicked.connect(self.on_apply_resolution)
+        res_layout.addWidget(apply_res_btn)
+        res_group.setLayout(res_layout)
+        layout.addWidget(res_group)
+
+        # --- rest of material props (metallic/roughness) kept as before ---
+        self.material_props_group = QGroupBox("Material Properties")
+        material_props_layout = QVBoxLayout()
         metallic_layout = QHBoxLayout()
         metallic_layout.addWidget(QLabel("Metallic:"))
         self.metallic = QSlider(Qt.Horizontal)
@@ -497,9 +577,8 @@ class ControlPanel(QWidget):
         self.metallic.sliderReleased.connect(self.on_material_slider_released)
         self.metallic.valueChanged.connect(self.on_material_value_changed)
         metallic_layout.addWidget(self.metallic)
-        layout.addLayout(metallic_layout)
-        
-        # Roughness with delayed update
+        material_props_layout.addLayout(metallic_layout)
+
         roughness_layout = QHBoxLayout()
         roughness_layout.addWidget(QLabel("Roughness:"))
         self.roughness = QSlider(Qt.Horizontal)
@@ -508,22 +587,111 @@ class ControlPanel(QWidget):
         self.roughness.sliderReleased.connect(self.on_material_slider_released)
         self.roughness.valueChanged.connect(self.on_material_value_changed)
         roughness_layout.addWidget(self.roughness)
-        layout.addLayout(roughness_layout)
-        
-        # Light intensity with immediate update
-        light_layout = QHBoxLayout()
-        light_layout.addWidget(QLabel("Light Power:"))
+        material_props_layout.addLayout(roughness_layout)
+
+        self.material_props_group.setLayout(material_props_layout)
+        layout.addWidget(self.material_props_group)
+
+        # Light intensity group stays as before
+        self.light_group = QGroupBox("Light Properties")
+        light_layout = QVBoxLayout()
+        light_intensity_layout = QHBoxLayout()
+        light_intensity_layout.addWidget(QLabel("Light Power:"))
         self.light_intensity = QDoubleSpinBox()
         self.light_intensity.setRange(0.1, 100.0)
         self.light_intensity.setSingleStep(0.5)
         self.light_intensity.setValue(15.0)
-        self.light_intensity.setDecimals(1)
         self.light_intensity.valueChanged.connect(self.on_light_intensity_changed)
-        light_layout.addWidget(self.light_intensity)
-        layout.addLayout(light_layout)
-        
+        light_intensity_layout.addWidget(self.light_intensity)
+        light_layout.addLayout(light_intensity_layout)
+        self.light_group.setLayout(light_layout)
+        layout.addWidget(self.light_group)
+
+        self.material_props_group.setVisible(False)
+        self.light_group.setVisible(False)
+
         group.setLayout(layout)
         return group
+
+    # -------------------------
+    # New handlers
+    # -------------------------
+    def open_color_picker(self):
+        color = QColorDialog.getColor()
+        if not color.isValid():
+            return
+        r = color.red() / 255.0
+        g = color.green() / 255.0
+        b = color.blue() / 255.0
+
+        # update sliders to match
+        self.color_r.blockSignals(True); self.color_g.blockSignals(True); self.color_b.blockSignals(True)
+        self.color_r.setValue(int(r * 255)); self.color_g.setValue(int(g * 255)); self.color_b.setValue(int(b * 255))
+        self.color_r.blockSignals(False); self.color_g.blockSignals(False); self.color_b.blockSignals(False)
+
+        self.raytracer.set_object_color(r, g, b)
+
+    def on_hsv_changed(self, _=None):
+        # preview update: update RGB sliders to show selected HSV
+        h = self.h_slider.value()
+        s = self.s_slider.value() / 100.0
+        v = self.v_slider.value() / 100.0
+        # Convert HSV->RGB (same routine as in interaction; reimplement lightweight)
+        h_norm = (h % 360) / 360.0
+        i = int(h_norm * 6)
+        f = h_norm * 6 - i
+        p = v * (1 - s)
+        q = v * (1 - f * s)
+        t = v * (1 - (1 - f) * s)
+        i_mod = i % 6
+        if i_mod == 0:
+            r, g, b = v, t, p
+        elif i_mod == 1:
+            r, g, b = q, v, p
+        elif i_mod == 2:
+            r, g, b = p, v, t
+        elif i_mod == 3:
+            r, g, b = p, q, v
+        elif i_mod == 4:
+            r, g, b = t, p, v
+        else:
+            r, g, b = v, p, q
+
+        self.color_r.blockSignals(True); self.color_g.blockSignals(True); self.color_b.blockSignals(True)
+        self.color_r.setValue(int(r * 255)); self.color_g.setValue(int(g * 255)); self.color_b.setValue(int(b * 255))
+        self.color_r.blockSignals(False); self.color_g.blockSignals(False); self.color_b.blockSignals(False)
+
+    def apply_hsv_to_selected(self):
+        h = self.h_slider.value()
+        s = self.s_slider.value() / 100.0
+        v = self.v_slider.value() / 100.0
+        self.raytracer.set_object_color_hsv(h, s, v)
+
+    def apply_texture_to_selected(self):
+        tex_type = self.texture_select.currentText()
+        params = {
+            'scale': float(self.tex_scale.value()),
+            'octaves': int(self.tex_octaves.value()),
+            'tint_hsv': (int(self.tint_h.value()), int(self.tint_s.value())/100.0, 1.0) if self.tint_s.value() > 0 else None
+        }
+        success = self.raytracer.set_object_texture(tex_type, params)
+        if not success:
+            print("Texture apply failed or unknown texture type")
+
+    def on_texture_type_changed(self, txt):
+        # show/hide params as needed; currently always shown
+        pass
+
+    def on_apply_resolution(self):
+        try:
+            w = int(self.res_w.text())
+            h = int(self.res_h.text())
+            if w <= 0 or h <= 0:
+                raise ValueError("Invalid resolution")
+            self.raytracer.resize_viewport(w, h)
+            # Update GUI display sizes as needed (the main_display will get new frames)
+        except Exception as e:
+            print(f"Invalid resolution: {e}")
     
     def create_denoiser_group(self):
         """Create denoiser controls"""
@@ -629,14 +797,10 @@ class ControlPanel(QWidget):
         self.raytracer.settings['move_speed'] = self.object_speed.value()
     
     def reset_camera(self):
-        """Reset camera to default"""
-        self.cam_x.setValue(0.0)
-        self.cam_y.setValue(2.0)
-        self.cam_z.setValue(5.0)
-        self.target_x.setValue(0.0)
-        self.target_y.setValue(0.0)
-        self.target_z.setValue(-1.0)
-        self.fov.setValue(45.0)
+        self.raytracer.reset_camera_and_rerender()
+
+
+        
     
     def update_camera_info(self):
         """Update camera controls from current camera"""
@@ -692,33 +856,47 @@ class ControlPanel(QWidget):
             self.metallic.blockSignals(True)
             self.roughness.blockSignals(True)
             self.color_r.blockSignals(True)
-            self.color_g.blockSignals(True)
             self.color_b.blockSignals(True)
+            self.color_g.blockSignals(True)
             self.light_intensity.blockSignals(True)
             
-            # Always show metallic and roughness
-            self.metallic.setValue(int(mat.metallic * 100))
-            self.roughness.setValue(int(mat.roughness * 100))
-            
             if hasattr(mat.albedo, 'x'):
-                # FIX: Correct order - R, G, B
-                self.color_r.setValue(int(mat.albedo.x * 100))
-                self.color_g.setValue(int(mat.albedo.y * 100))
-                self.color_b.setValue(int(mat.albedo.z * 100))
+                # Convert from Vector3(x=R, y=G, z=B)
+                self.color_r.setValue(int(mat.albedo.y * 100))  # Red channel
+                self.color_g.setValue(int(mat.albedo.y * 100))  # Green channel
+                self.color_b.setValue(int(mat.albedo.z * 100))  # Blue channel
             
-            if hasattr(mat, 'emission') and hasattr(mat.emission, 'x'):
+            # Check if it's a light source
+            is_light = False
+            if hasattr(mat, 'emission'):
                 emission = mat.emission
-                avg_emission = (emission.x + emission.y + emission.z) / 3.0
-                self.light_intensity.setValue(avg_emission)
-                self.light_intensity.setEnabled(avg_emission > 0.1)
+                is_light = emission.x > 0.1 or emission.y > 0.1 or emission.z > 0.1
+            
+            # Show/hide appropriate controls
+            if is_light:
+                # For lights: show light controls, hide material controls
+                self.material_props_group.setVisible(False)
+                self.light_group.setVisible(True)
+                
+                # Update light intensity
+                if hasattr(mat.emission, 'x'):
+                    emission = mat.emission
+                    avg_emission = (emission.x + emission.y + emission.z) / 3.0
+                    self.light_intensity.setValue(avg_emission)
             else:
-                self.light_intensity.setEnabled(False)
+                # For non-lights: show material controls, hide light controls
+                self.material_props_group.setVisible(True)
+                self.light_group.setVisible(False)
+                
+                # Update material properties
+                self.metallic.setValue(int(mat.metallic * 100))
+                self.roughness.setValue(int(mat.roughness * 100))
             
             self.metallic.blockSignals(False)
             self.roughness.blockSignals(False)
             self.color_r.blockSignals(False)
-            self.color_g.blockSignals(False)
             self.color_b.blockSignals(False)
+            self.color_g.blockSignals(False)
             self.light_intensity.blockSignals(False)
     
     def on_material_value_changed(self):
@@ -738,34 +916,39 @@ class ControlPanel(QWidget):
         
         obj = self.raytracer.get_selected_object()
         if obj:
-            # Apply all material properties
-            # FIX: Correct order - R, G, B
-            r = self.color_r.value() / 100.0
+            # FIXED: Correct order - BGR sliders to Vector3(R, G, B)
+            b = self.color_r.value() / 100.0
             g = self.color_g.value() / 100.0
-            b = self.color_b.value() / 100.0
+            r = self.color_b.value() / 100.0
             obj.material.albedo = Vector3(r, g, b)
             
-            obj.material.metallic = self.metallic.value() / 100.0
-            obj.material.roughness = self.roughness.value() / 100.0
-            
-            # Update light color if it's a light
+            # Check if it's a light source
+            is_light = False
             if hasattr(obj.material, 'emission'):
                 emission = obj.material.emission
-                # Check if it's a light (has non-zero emission)
                 is_light = emission.x > 0.1 or emission.y > 0.1 or emission.z > 0.1
-                if is_light:
-                    # Update emission color to match albedo, but maintain intensity
-                    current_intensity = (emission.x + emission.y + emission.z) / 3.0
-                    if current_intensity > 0:
-                        # Scale the albedo color by the current intensity
-                        obj.material.emission = Vector3(
-                            r * current_intensity,
-                            g * current_intensity,
-                            b * current_intensity
-                        )
             
-            # Force immediate update
-            self.raytracer.update_object_material_immediate()
+            # Only update metallic/roughness for non-lights
+            if not is_light:
+                obj.material.metallic = self.metallic.value() / 100.0
+                obj.material.roughness = self.roughness.value() / 100.0
+                # Update the material in the ray tracer
+                self.raytracer.ray_tracer.set_scene(self.raytracer.scene)
+                self.raytracer.restart_rendering()
+            else:
+                # For lights, update emission color to match albedo with current intensity
+                current_intensity = (obj.material.emission.x + 
+                                   obj.material.emission.y + 
+                                   obj.material.emission.z) / 3.0
+                if current_intensity > 0:
+                    obj.material.emission = Vector3(
+                        r * current_intensity,
+                        g * current_intensity,
+                        b * current_intensity
+                    )
+                    # Update the scene
+                    self.raytracer.ray_tracer.set_scene(self.raytracer.scene)
+                    self.raytracer.restart_rendering()
     
     def on_light_intensity_changed(self, value):
         """Handle light intensity changes"""
@@ -852,30 +1035,11 @@ class ControlPanel(QWidget):
         try:
             # Generate unique name and ID
             obj_count = self.raytracer.get_object_count()
-            new_id = obj_count + 1
-            name = f"Sphere_{new_id}"
+            new_id = self.raytracer.add_object_to_scene()
             
-            # Create new sphere at camera position + offset
-            camera_pos = self.raytracer.camera.position
-            position = camera_pos + Vector3(2, 0, -2)  # Offset from camera
-            
-            # Create material
-            material = Material()
-            material.albedo = Vector3(0.8, 0.3, 0.2)
-            material.metallic = 0.5
-            material.roughness = 0.3
-            material.emission = Vector3(0, 0, 0)
-            
-            # Create sphere
-            sphere = Sphere()
-            sphere.center = position
-            sphere.radius = 0.5
-            sphere.material = material
-            sphere.object_id = new_id
-            sphere.name = name
-            
-            # Add to scene
-            self.raytracer.add_object_to_scene(sphere)
+            if new_id is None:
+                print("Failed to add object")
+                return
             
             # Update UI
             self.update_object_list()
@@ -883,7 +1047,9 @@ class ControlPanel(QWidget):
             
             # Select the new object
             self.object_select.setCurrentIndex(new_id)
-            print(f"Added object: {name}")
+            self.on_object_selected(new_id)
+            
+            print(f"Added object with ID: {new_id}")
             
         except Exception as e:
             print(f"Error adding object: {e}")
@@ -896,13 +1062,16 @@ class ControlPanel(QWidget):
             obj = self.raytracer.get_selected_object()
             if obj and obj.object_id > 0:  # Don't remove ground
                 print(f"Removing object: {obj.object_id}")
-                self.raytracer.remove_object_from_scene(obj.object_id)
-                self.update_object_list()
-                self.update_object_count()
-                # Update the selection to the first available object
-                if self.object_select.count() > 0:
-                    self.object_select.setCurrentIndex(0)
-                    self.on_object_selected(0)
+                success = self.raytracer.remove_object_from_scene(obj.object_id)
+                if success:
+                    self.update_object_list()
+                    self.update_object_count()
+                    # Update the selection to the first available object
+                    if self.object_select.count() > 0:
+                        self.object_select.setCurrentIndex(0)
+                        self.on_object_selected(0)
+                else:
+                    print("Failed to remove object")
         except Exception as e:
             print(f"Error removing object: {e}")
             import traceback

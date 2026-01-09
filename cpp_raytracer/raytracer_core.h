@@ -210,6 +210,7 @@ public:
     ~Scene();
     
     void add_sphere(const Sphere& sphere);
+    void remove_sphere(int object_id);
     void build_bvh();
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
@@ -238,6 +239,8 @@ public:
     
     // New methods for interaction
     Camera& get_camera() { return camera; }
+    Camera get_camera_copy() const { return camera; }
+    void set_camera(const Camera& cam) { camera = cam; }
     int select_object(double x, double y, int width, int height);
     void move_camera(const Vector3& delta);
 

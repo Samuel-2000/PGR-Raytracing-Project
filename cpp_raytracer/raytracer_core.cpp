@@ -77,6 +77,22 @@ void Scene::add_sphere(const Sphere& sphere) {
     }
 }
 
+void Scene::remove_sphere(int object_id) {
+    // Remove any sphere with the matching object_id
+    auto it = std::remove_if(spheres.begin(), spheres.end(),
+                             [object_id](const Sphere& s) { return s.object_id == object_id; });
+    if (it != spheres.end()) {
+        spheres.erase(it, spheres.end());
+        if (debug_mode) {
+            std::cout << "[Scene] Removed sphere id=" << object_id << std::endl;
+        }
+    } else {
+        if (debug_mode) {
+            std::cout << "[Scene] remove_sphere: id not found: " << object_id << std::endl;
+        }
+    }
+}
+
 
 void Scene::build_bvh() {
     if (debug_mode) {

@@ -88,6 +88,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("use_bvh", &Scene::use_bvh)
         .def_readwrite("debug_mode", &Scene::debug_mode)
         .def("add_sphere", &Scene::add_sphere)
+        .def("remove_sphere", &Scene::remove_sphere)
         .def("build_bvh", &Scene::build_bvh)
         .def("hit", &Scene::hit)
         .def("cast_ray_for_selection", &Scene::cast_ray_for_selection);
@@ -96,6 +97,8 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def(py::init<>())
         .def("set_scene", &RayTracer::set_scene)
         .def("render", &RayTracer::render)
+        .def("get_camera", &RayTracer::get_camera_copy)
+        .def("set_camera", &RayTracer::set_camera)
         .def("get_camera", &RayTracer::get_camera, py::return_value_policy::reference)
         .def("select_object", &RayTracer::select_object)
         .def("move_camera", &RayTracer::move_camera)
