@@ -1,10 +1,10 @@
-#interaction.py
+# interaction.py
 
 import numpy as np
 import time
 import threading
 from queue import Queue
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 import math
 from enum import Enum
 import cv2
@@ -53,29 +53,15 @@ class Matrix3:
             m[2][0]*vec.x + m[2][1]*vec.y + m[2][2]*vec.z
         )
 
-class RayTracerInteraction:
-    """C++ Ray Tracer with Complete Interactive Controls"""
+class CameraController:
+    """Handles camera movement and rotation logic"""
     
-    def __init__(self, width: int = 640, height: int = 480, debug_mode: bool = False):
-        self.width = width
-        self.height = height
-        
-        # Initialize C++ ray tracer
-        self.ray_tracer = RayTracer()
-        self.scene = self.create_interactive_scene()
-        self.ray_tracer.set_scene(self.scene)
-        
-        # Get camera reference
-        self.camera = self.ray_tracer.get_camera()
-        
-        # Initialize camera
-        self.camera.position = Vector3(0, 2, 5)
-        self.camera.target = Vector3(0, 0, -1)
-        self.camera.up = Vector3(0, 1, 0)
-        self.camera.fov = 45.0
+    def __init__(self, camera: Camera, settings: Dict):
+        self.camera = camera
+        self.settings = settings
         
         # Camera control state
-        self.camera_keys_pressed = {
+        self.keys_pressed = {
             'forward': False,  # W
             'backward': False,  # S
             'left': False,  # A
@@ -83,299 +69,229 @@ class RayTracerInteraction:
             'up': False,  # Space/Shift
             'down': False,  # Ctrl
         }
-        self.camera_rotating = False
+        self.rotating = False
         self.last_mouse_pos = None
-        self.camera_last_update_time = 0
-        self.camera_update_delay = 0.05  # 50ms delay between updates
-        
-        # Store previous mode before camera interaction
-        self.previous_render_mode = RenderMode.RAYTRACING
         
         # Camera orientation frame
         self.update_camera_frame()
+    
+    def update_camera_frame(self):
+        """Update camera orientation vectors"""
+        # Forward vector (camera to target)
+        self.forward = (self.camera.target - self.camera.position).normalize()
         
-        # Object dragging state
-        self.dragging_object = False
+        # Right vector (perpendicular to forward and world up)
+        world_up = Vector3(0, 1, 0)
+        self.right = self.forward.cross(world_up).normalize()
+        if self.right.length() == 0:
+            self.right = Vector3(1, 0, 0)
+        
+        # Up vector (perpendicular to forward and right)
+        self.up = self.right.cross(self.forward).normalize()
+    
+    def get_movement_vector(self) -> Vector3:
+        """Calculate movement vector based on pressed keys"""
+        move_vector = Vector3(0, 0, 0)
+        speed = self.settings['camera_move_speed']
+        
+        if self.keys_pressed['forward']:
+            move_vector = move_vector + self.forward * speed
+        if self.keys_pressed['backward']:
+            move_vector = move_vector - self.forward * speed
+        if self.keys_pressed['left']:
+            move_vector = move_vector - self.right * speed
+        if self.keys_pressed['right']:
+            move_vector = move_vector + self.right * speed
+        if self.keys_pressed['up']:
+            move_vector = move_vector + Vector3(0, speed, 0)
+        if self.keys_pressed['down']:
+            move_vector = move_vector - Vector3(0, speed, 0)
+        
+        return move_vector
+    
+    def apply_bounds(self):
+        """Apply bounds to camera position"""
+        self.camera.position.x = max(-20, min(20, self.camera.position.x))
+        self.camera.position.y = max(0.1, min(20, self.camera.position.y))
+        self.camera.position.z = max(-20, min(20, self.camera.position.z))
+    
+    def rotate(self, dx: float, dy: float):
+        """Rotate camera based on mouse movement"""
+        sensitivity = self.settings['camera_rotate_speed']
+        yaw = -dx * sensitivity
+        pitch = -dy * sensitivity
+        
+        # Limit pitch to prevent flipping
+        pitch = max(-1.5, min(1.5, pitch))
+        
+        # Current orientation
+        forward = (self.camera.target - self.camera.position).normalize()
+        right = forward.cross(Vector3(0, 1, 0)).normalize()
+        
+        # Yaw rotation (around world up)
+        yaw_rot = Matrix3.rotation_y(yaw)
+        forward = yaw_rot * forward
+        
+        # Pitch rotation (around camera right)
+        if abs(pitch) > 0.001:
+            pitch_rot = Matrix3.rotation_axis(right, pitch)
+            forward = pitch_rot * forward
+        
+        # Update camera target
+        self.camera.target = self.camera.position + forward
+        self.update_camera_frame()
+
+class ObjectDragger:
+    """Handles object dragging logic"""
+    
+    def __init__(self, scene: Scene, camera_controller: CameraController, settings: Dict):
+        self.scene = scene
+        self.camera_controller = camera_controller
+        self.settings = settings
+        
+        self.dragging = False
         self.selected_object_id = -1
         self.drag_start_pos = None
         self.drag_start_object_pos = None
         self.lock_x = self.lock_y = self.lock_z = False
+    
+    def start_drag(self, x: float, y: float) -> bool:
+        """Start dragging an object at screen coordinates (x, y)"""
+        # This will be called from RayTracerInteraction.start_object_dragging
+        return False
+    
+    def update_drag(self, dx: float, dy: float):
+        """Update object position during dragging"""
+        if not self.dragging:
+            return
         
-        # Rendering state
-        self.render_mode = RenderMode.RAYTRACING
+        obj = self._get_selected_object()
+        if not obj:
+            return
+        
+        speed = self.settings['move_speed'] * 2.0
+        
+        # Convert screen movement to world movement
+        world_dx = self.camera_controller.right * dx * 2.0
+        world_dy = self.camera_controller.up * (-dy) * 2.0
+        
+        # Apply dimension locks
+        if self.lock_x:
+            world_dx.x = 0
+            world_dy.x = 0
+        if self.lock_y:
+            world_dx.y = 0
+            world_dy.y = 0
+        if self.lock_z:
+            world_dx.z = 0
+            world_dy.z = 0
+        
+        # Calculate new position
+        move_vector = (world_dx + world_dy) * speed
+        new_pos = self.drag_start_object_pos + move_vector
+        
+        # Apply bounds
+        new_pos.x = max(-8, min(8, new_pos.x))
+        new_pos.y = max(0.1, min(8, new_pos.y))
+        new_pos.z = max(-8, min(2, new_pos.z))
+        
+        # Update object
+        obj.center = new_pos
+    
+    def stop_drag(self):
+        """Stop dragging object"""
+        self.dragging = False
+        self.lock_x = self.lock_y = self.lock_z = False
+    
+    def set_dimension_lock(self, dimension: str, state: bool):
+        """Lock/unlock a dimension for dragging"""
+        if dimension == 'x':
+            self.lock_x = state
+        elif dimension == 'y':
+            self.lock_y = state
+        elif dimension == 'z':
+            self.lock_z = state
+    
+    def _get_selected_object(self) -> Optional[Sphere]:
+        """Get currently selected object"""
+        for sphere in self.scene.spheres:
+            if sphere.object_id == self.selected_object_id:
+                return sphere
+        return None
+
+class RenderStateManager:
+    """Manages rendering state and mode transitions"""
+    
+    def __init__(self, width: int, height: int):
+        self.width = width
+        self.height = height
+        
+        self.previous_mode = RenderMode.RAYTRACING
+        self.current_mode = RenderMode.RAYTRACING
         self.is_rendering = False
-        self.accumulated_image = None
-        self.total_samples = 0
-        self.frame_queue = Queue()
         
         # Buffers for fast rendering modes
         self.silhouette_buffer = np.zeros((height, width, 3), dtype=np.uint8)
         self.wireframe_buffer = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # Settings
-        self.settings = {
-            'max_samples': 32,
-            'samples_per_batch': 8,
-            'max_depth': 4,
-            'exposure': 1.5,
-            'enhance_image': True,
-            'show_denoisers': False,
-            'selected_denoisers': ['bilateral'],
-            'selected_object': 1,
-            'move_speed': 0.3,
-            'camera_move_speed': 0.1,
-            'camera_rotate_speed': 0.5,
-        }
-        
-        # Thread safety
-        self.render_lock = threading.RLock()
-        
-        # Denoiser
-        self.denoiser = Denoiser()
-        
-        # Camera movement thread
-        self.camera_move_active = True
-        self.camera_move_thread = threading.Thread(target=self._camera_move_worker, daemon=True)
-        self.camera_move_thread.start()
+        # Interaction state
         self.interaction_in_progress = False
         self.last_interaction_time = 0
         self.interaction_timeout = 0.5  # 500ms timeout
-        
-        print(f"✓ Initialized Interactive Ray Tracer ({width}x{height})")
-        print(f"  Controls: WASD+Space/Ctrl to move, Right Mouse to rotate")
-        print(f"  Object Drag: Hold X/Y/Z + Left Click + Drag")
     
-    def update_camera_frame(self):
-        """Update camera orientation vectors"""
-        # Forward vector (camera to target)
-        self.camera_forward = (self.camera.target - self.camera.position).normalize()
+    def set_mode(self, mode: RenderMode):
+        """Set rendering mode with proper state management"""
+        if mode != self.current_mode:
+            self.previous_mode = self.current_mode
+            self.current_mode = mode
         
-        # Right vector (perpendicular to forward and world up)
-        world_up = Vector3(0, 1, 0)
-        self.camera_right = self.camera_forward.cross(world_up).normalize()
-        if self.camera_right.length() == 0:
-            self.camera_right = Vector3(1, 0, 0)
+        # Stop ray tracing when switching to fast modes
+        if mode != RenderMode.RAYTRACING:
+            self.is_rendering = False
+    
+    def start_interaction(self):
+        """Start user interaction"""
+        self.interaction_in_progress = True
+        self.last_interaction_time = time.time()
         
-        # Up vector (perpendicular to forward and right)
-        self.camera_up = self.camera_right.cross(self.camera_forward).normalize()
-    
-    def _camera_move_worker(self):
-        """Continuous camera movement worker thread with frame limiting"""
-        limiter = FrameRateLimiter(30)
+        # Store previous mode if it was ray tracing
+        if self.current_mode == RenderMode.RAYTRACING:
+            self.previous_mode = RenderMode.RAYTRACING
         
-        while self.camera_move_active:
-            try:
-                current_time = time.time()
-                
-                # Check if we should return to ray tracing after interaction timeout
-                if (self.interaction_in_progress and 
-                    current_time - self.last_interaction_time > self.interaction_timeout and
-                    not any(self.camera_keys_pressed.values()) and
-                    not self.camera_rotating):
-                    
-                    with self.render_lock:
-                        self.interaction_in_progress = False
-                        if self.render_mode != RenderMode.RAYTRACING and self.previous_render_mode == RenderMode.RAYTRACING:
-                            self.render_mode = RenderMode.RAYTRACING
-                            self.restart_rendering()
-                
-                # Process camera movement
-                if any(self.camera_keys_pressed.values()) and limiter.should_update():
-                    self._process_camera_movement()
-                    self.last_interaction_time = current_time
-                    limiter.update()
-                
-                time.sleep(0.01)
-                
-            except Exception as e:
-                print(f"Camera worker error: {e}")
-                time.sleep(0.1)
+        # Switch to wireframe for responsiveness
+        self.set_mode(RenderMode.WIREFRAME)
     
-    def _process_camera_movement(self):
-        """Process continuous camera movement with bounds checking"""
-        with self.render_lock:
-            if not any(self.camera_keys_pressed.values()):
-                return
-                
-            move_vector = Vector3(0, 0, 0)
-            speed = self.settings['camera_move_speed']
-            
-            # Forward/backward movement
-            if self.camera_keys_pressed['forward']:
-                move_vector = move_vector + self.camera_forward * speed
-            if self.camera_keys_pressed['backward']:
-                move_vector = move_vector - self.camera_forward * speed
-            
-            # Left/right strafing
-            if self.camera_keys_pressed['left']:
-                move_vector = move_vector - self.camera_right * speed
-            if self.camera_keys_pressed['right']:
-                move_vector = move_vector + self.camera_right * speed
-            
-            # Up/down movement
-            if self.camera_keys_pressed['up']:
-                move_vector = move_vector + Vector3(0, speed, 0)
-            if self.camera_keys_pressed['down']:
-                move_vector = move_vector - Vector3(0, speed, 0)
-            
-            if move_vector.length() > 0:
-                # Apply movement to BOTH the camera and ray tracer camera
-                self.camera.position = self.camera.position + move_vector
-                self.camera.target = self.camera.target + move_vector
-                
-                # IMPORTANT: Also update the ray tracer's camera
-                self.ray_tracer.get_camera().position = self.camera.position
-                self.ray_tracer.get_camera().target = self.camera.target
-                
-                # Apply bounds to camera
-                self.camera.position.x = max(-20, min(20, self.camera.position.x))
-                self.camera.position.y = max(0.1, min(20, self.camera.position.y))
-                self.camera.position.z = max(-20, min(20, self.camera.position.z))
-                
-                # Also update ray tracer camera bounds
-                rt_camera = self.ray_tracer.get_camera()
-                rt_camera.position.x = max(-20, min(20, rt_camera.position.x))
-                rt_camera.position.y = max(0.1, min(20, rt_camera.position.y))
-                rt_camera.position.z = max(-20, min(20, rt_camera.position.z))
-                
-                self.update_camera_frame()
-                
-                # Store previous mode if we were in ray tracing
-                if self.render_mode == RenderMode.RAYTRACING:
-                    self.previous_render_mode = RenderMode.RAYTRACING
-                
-                # Switch to wireframe during movement (no ray tracing)
-                self.render_mode = RenderMode.WIREFRAME
-                self.is_rendering = False  # Stop ray tracing
-                
-                # Force a wireframe update without ray tracing
-                self._process_frame_for_display(0.05)
-
-    def start_camera_rotation(self, x: float, y: float):
-        """Start camera rotation with mouse"""
-        with self.render_lock:
-            self.camera_rotating = True
-            self.interaction_in_progress = True
-            self.last_interaction_time = time.time()
-            self.last_mouse_pos = (x, y)
-            
-            # Store previous mode
-            if self.render_mode == RenderMode.RAYTRACING:
-                self.previous_render_mode = RenderMode.RAYTRACING
-            
-            # Switch to wireframe for responsiveness and stop ray tracing
-            self.render_mode = RenderMode.WIREFRAME
-            self.is_rendering = False  # Stop ray tracing
-            print(f"Camera rotation started, previous mode: {self.previous_render_mode}")
-
-    def update_camera_rotation(self, dx: float, dy: float):
-        """Update camera rotation based on mouse movement"""
-        if not self.camera_rotating:
-            return
-        
-        with self.render_lock:
-            self.last_interaction_time = time.time()
-            sensitivity = self.settings['camera_rotate_speed']
-            yaw = -dx * sensitivity
-            pitch = -dy * sensitivity
-            
-            # Limit pitch to prevent flipping
-            pitch = max(-1.5, min(1.5, pitch))
-            
-            # Current orientation
-            forward = (self.camera.target - self.camera.position).normalize()
-            right = forward.cross(Vector3(0, 1, 0)).normalize()
-            
-            # Yaw rotation (around world up)
-            yaw_rot = Matrix3.rotation_y(yaw)
-            forward = yaw_rot * forward
-            
-            # Pitch rotation (around camera right)
-            if abs(pitch) > 0.001:
-                pitch_rot = Matrix3.rotation_axis(right, pitch)
-                forward = pitch_rot * forward
-            
-            # Update BOTH cameras
-            new_target = self.camera.position + forward
-            self.camera.target = new_target
-            
-            # Also update the ray tracer's camera
-            rt_camera = self.ray_tracer.get_camera()
-            rt_camera.target = new_target
-            rt_camera.position = self.camera.position
-            
-            self.update_camera_frame()
-            
-            # Force display update
-            self._process_frame_for_display(0.05)
-
-    def stop_camera_rotation(self):
-        """Stop camera rotation and return to previous mode"""
-        with self.render_lock:
-            was_rotating = self.camera_rotating
-            self.camera_rotating = False
-            self.last_mouse_pos = None
-            
-            # Return to previous mode if it was raytracing
-            if was_rotating and self.previous_render_mode == RenderMode.RAYTRACING:
-                # Reset interaction state
-                self.interaction_in_progress = False
-                
-                # Short delay before returning to ray tracing
-                time.sleep(0.05)
-                
-                # Switch back to ray tracing
-                self.render_mode = RenderMode.RAYTRACING
-                print("Camera rotation stopped, returning to ray tracing")
-                
-                # Restart ray tracing
-                self.restart_rendering()
-            
-            elif was_rotating:
-                # Return to whatever mode we were in before
-                self.render_mode = self.previous_render_mode
-                self._process_frame_for_display(0.016)
+    def update_interaction(self):
+        """Update last interaction time"""
+        self.last_interaction_time = time.time()
     
-    def set_camera_key_state(self, key: str, state: bool):
-        """Update camera key state with better mode management"""
-        if key in self.camera_keys_pressed:
-            old_state = self.camera_keys_pressed[key]
-            self.camera_keys_pressed[key] = state
-            
-            # If key was just pressed and we're in ray tracing, switch to wireframe and stop ray tracing
-            if state and not old_state:
-                # mark that an interaction is in progress (so the worker can manage returning to RT)
-                self.interaction_in_progress = True
-                self.last_interaction_time = time.time()
-
-                if self.render_mode == RenderMode.RAYTRACING and not self.camera_rotating:
-                    self.previous_render_mode = RenderMode.RAYTRACING
-                    self.render_mode = RenderMode.WIREFRAME
-                    self.is_rendering = False  # Stop ray tracing
-                    # Force immediate update for responsiveness
-                    self._process_frame_for_display(0.016)
-
-                # Always trigger frame update on key press
-                self._process_frame_for_display(0.016)
-            
-            # If all keys released and not rotating, return to previous mode
-            elif not state and not any(self.camera_keys_pressed.values()) and not self.camera_rotating:
-                if self.previous_render_mode == RenderMode.RAYTRACING:
-                    # Update ray tracer camera to match current camera
-                    rt_camera = self.ray_tracer.get_camera()
-                    rt_camera.position = self.camera.position
-                    rt_camera.target = self.camera.target
-                    rt_camera.up = self.camera.up
-                    rt_camera.fov = self.camera.fov   # <<< ADD THIS LINE
-
-                    self.render_mode = RenderMode.RAYTRACING
-                    self.restart_rendering()
-                else:
-                    # Stay in current mode if previous wasn't ray tracing
-                    self.render_mode = self.previous_render_mode
-                    self._process_frame_for_display(0.016)
+    def should_return_to_raytracing(self) -> bool:
+        """Check if should return to ray tracing mode"""
+        current_time = time.time()
+        return (
+            self.interaction_in_progress and
+            current_time - self.last_interaction_time > self.interaction_timeout and
+            self.previous_mode == RenderMode.RAYTRACING and
+            not self.interaction_in_progress  # Double check
+        )
     
-    def create_interactive_scene(self) -> Scene:
+    def return_to_previous_mode(self):
+        """Return to previous rendering mode"""
+        if self.previous_mode == RenderMode.RAYTRACING:
+            # Reset interaction state
+            self.interaction_in_progress = False
+            
+            # Switch back to ray tracing
+            self.current_mode = RenderMode.RAYTRACING
+            self.is_rendering = True
+        else:
+            self.current_mode = self.previous_mode
+
+class SceneManager:
+    """Manages scene creation and object manipulation"""
+    
+    @staticmethod
+    def create_interactive_scene() -> Scene:
         """Create a scene with interactive objects"""
         scene = Scene()
         scene.background_color = Vector3(0.05, 0.05, 0.1)
@@ -437,104 +353,368 @@ class RayTracerInteraction:
         
         scene.build_bvh()
         return scene
+
+class Renderer:
+    """Handles different rendering modes"""
     
-    def get_object_count(self) -> int:
-        """Get number of interactive objects"""
-        return len(self.scene.spheres) - 1
+    def __init__(self, width: int, height: int, camera: Camera, scene: Scene):
+        self.width = width
+        self.height = height
+        self.camera = camera
+        self.scene = scene
+        
+        # Buffers
+        self.silhouette_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+        self.wireframe_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    def render_silhouette(self, selected_object_id: int = -1) -> np.ndarray:
+        """Render silhouette view for fast object editing"""
+        self.silhouette_buffer.fill(0)
+        width, height = self.width, self.height
+        
+        # Use the same camera setup as in C++ Camera::get_ray()
+        fov = self.camera.fov * 3.14159 / 180.0
+        aspect_ratio = width / height
+        tan_fov = math.tan(fov / 2.0)
+        
+        # Camera basis vectors (same as in C++)
+        forward = (self.camera.target - self.camera.position).normalize()
+        right = forward.cross(Vector3(0, 1, 0)).normalize()
+        up = right.cross(forward).normalize()
+        
+        # Helper function to project 3D point to 2D screen
+        def project_point(point: Vector3):
+            # Convert from world to camera space
+            obj_pos = point - self.camera.position
+            
+            # Compute coordinates in camera basis
+            z_cam = obj_pos.dot(forward)
+            if z_cam <= 0.001:  # Behind or too close to camera
+                return None
+            
+            x_cam = obj_pos.dot(right)
+            y_cam = obj_pos.dot(up)
+            
+            # Apply perspective projection (same as C++ get_ray but inverted)
+            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
+            y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
+            
+            # Clamp to screen bounds
+            x_screen = max(0, min(width - 1, x_screen))
+            y_screen = max(0, min(height - 1, y_screen))
+            
+            return (int(x_screen), int(y_screen), z_cam)
+        
+        # Render all spheres
+        for sphere in self.scene.spheres:
+            if sphere.object_id == 0:  # Skip ground
+                continue
+            
+            # Project sphere center
+            projected = project_point(sphere.center)
+            if projected is None:
+                continue
+                
+            x_screen, y_screen, z_cam = projected
+            
+            # Calculate projected radius using perspective
+            sphere_radius_pixels = (sphere.radius / (z_cam * tan_fov)) * height / 2.0
+            radius = max(2, int(sphere_radius_pixels))
+            
+            if 0 <= x_screen < width and 0 <= y_screen < height:
+                center = (int(x_screen), int(y_screen))
+                
+                # Color coding
+                if sphere.object_id == selected_object_id:
+                    color = (255, 255, 0)  # Yellow for selected
+                    thickness = 3
+                else:
+                    color = (200, 200, 200)  # Gray for others
+                    thickness = 1
+                
+                cv2.circle(self.silhouette_buffer, center, radius, color, thickness)
+                
+                # Crosshair for selected
+                if sphere.object_id == selected_object_id:
+                    cv2.line(self.silhouette_buffer,
+                            (center[0] - 10, center[1]),
+                            (center[0] + 10, center[1]),
+                            (0, 255, 255), 2)
+                    cv2.line(self.silhouette_buffer,
+                            (center[0], center[1] - 10),
+                            (center[0], center[1] + 10),
+                            (0, 255, 255), 2)
+        
+        return self.silhouette_buffer.astype(np.float32) / 255.0
+    
+    def render_wireframe(self, selected_object_id: int = -1) -> np.ndarray:
+        """Render wireframe view for fast camera navigation"""
+        self.wireframe_buffer.fill(0)
+        width, height = self.width, self.height
+        
+        # Camera parameters
+        fov = self.camera.fov * 3.14159 / 180.0
+        aspect_ratio = width / height
+        tan_fov = np.tan(fov / 2.0)
+        
+        forward = (self.camera.target - self.camera.position).normalize()
+        right = forward.cross(Vector3(0, 1, 0)).normalize()
+        up = right.cross(forward).normalize()
+        
+        # Helper function with corrected Y axis
+        def project_point(point: Vector3) -> Optional[Tuple[int, int]]:
+            obj_pos = point - self.camera.position
+            z_cam = obj_pos.dot(forward)
+            
+            if z_cam <= 0.1:
+                return None
+            
+            x_cam = obj_pos.dot(right)
+            y_cam = obj_pos.dot(up)
+            
+            # Correct projection with Y inversion
+            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
+            y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
+            
+            # Clamp to screen bounds
+            x_screen = max(0, min(width - 1, x_screen))
+            y_screen = max(0, min(height - 1, y_screen))
+            
+            return (int(x_screen), int(y_screen))
+        
+        # Draw ground grid
+        self._render_grid(project_point)
+        
+        # Draw spheres
+        for sphere in self.scene.spheres:
+            if sphere.object_id == 0:
+                continue
+            
+            center_screen = project_point(sphere.center)
+            if center_screen:
+                # Calculate screen radius
+                distance = (sphere.center - self.camera.position).dot(forward)
+                if distance > 0:
+                    radius_screen = (sphere.radius / (distance * tan_fov)) * height / 2.0
+                    radius_screen = max(2, int(radius_screen))
+                    
+                    # Color
+                    if sphere.object_id == selected_object_id:
+                        color = (255, 255, 0)
+                        thickness = 2
+                    else:
+                        color = (200, 200, 200)
+                        thickness = 1
+                    
+                    cv2.circle(self.wireframe_buffer, center_screen, radius_screen, color, thickness)
+                    
+                    # Axes for selected
+                    if sphere.object_id == selected_object_id:
+                        self._render_axes(sphere, center_screen, project_point)
+        
+        return self.wireframe_buffer.astype(np.float32) / 255.0
+    
+    def _render_grid(self, project_point):
+        """Render ground grid"""
+        grid_size = 10
+        grid_step = 1.0
+        
+        for i in range(-grid_size, grid_size + 1):
+            x = i * grid_step
+            
+            # X lines
+            for j in range(-grid_size, grid_size):
+                z1 = j * grid_step
+                z2 = (j + 1) * grid_step
+                
+                p1 = Vector3(x, 0, z1)
+                p2 = Vector3(x, 0, z2)
+                
+                s1 = project_point(p1)
+                s2 = project_point(p2)
+                
+                if s1 and s2:
+                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
+            
+            # Z lines
+            for j in range(-grid_size, grid_size):
+                x1 = j * grid_step
+                x2 = (j + 1) * grid_step
+                
+                p1 = Vector3(x1, 0, x)
+                p2 = Vector3(x2, 0, x)
+                
+                s1 = project_point(p1)
+                s2 = project_point(p2)
+                
+                if s1 and s2:
+                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
+    
+    def _render_axes(self, sphere: Sphere, center_screen: Tuple[int, int], project_point):
+        """Render XYZ axes for selected object"""
+        axes = [
+            (Vector3(0.5, 0, 0), (255, 0, 0)),   # X - Red
+            (Vector3(0, 0.5, 0), (0, 255, 0)),   # Y - Green
+            (Vector3(0, 0, -0.5), (0, 0, 255))   # Z - Blue
+        ]
+        
+        for axis_vec, axis_color in axes:
+            end = sphere.center + axis_vec
+            end_screen = project_point(end)
+            if end_screen:
+                cv2.line(self.wireframe_buffer, center_screen, end_screen, axis_color, 2)
+
+class RayTracerInteraction:
+    """Main class for interactive ray tracing"""
+    
+    def __init__(self, width: int = 640, height: int = 480, debug_mode: bool = False):
+        self.width = width
+        self.height = height
+        
+        # Initialize C++ ray tracer
+        self.ray_tracer = RayTracer()
+        self.scene = SceneManager.create_interactive_scene()
+        self.ray_tracer.set_scene(self.scene)
+        
+        # Get camera reference
+        self.camera = self.ray_tracer.get_camera()
+        self._init_camera()
+        
+        # Settings
+        self.settings = {
+            'max_samples': 32,
+            'samples_per_batch': 8,
+            'max_depth': 4,
+            'exposure': 1.5,
+            'enhance_image': True,
+            'show_denoisers': False,
+            'selected_denoisers': ['bilateral'],
+            'selected_object': 1,
+            'move_speed': 0.3,
+            'camera_move_speed': 0.1,
+            'camera_rotate_speed': 0.5,
+        }
+        
+        # Initialize components
+        self.camera_controller = CameraController(self.camera, self.settings)
+        self.object_dragger = ObjectDragger(self.scene, self.camera_controller, self.settings)
+        self.render_state = RenderStateManager(width, height)
+        self.renderer = Renderer(width, height, self.camera, self.scene)
+        
+        # Ray tracing state
+        self.accumulated_image = None
+        self.total_samples = 0
+        self.frame_queue = Queue()
+        
+        # Thread safety
+        self.render_lock = threading.RLock()
+        
+        # Denoiser
+        self.denoiser = Denoiser()
+        
+        # GUI reference for callbacks (set by GUI)
+        self._gui = None
+        
+        # Key state tracking
+        self._last_key_states = {}
+        self._last_key_event_time = 0
+        
+        # Fix: Camera auto-movement prevention
+        self._camera_auto_move_fix = False
+        self._last_manual_movement = 0
+        
+        # Start camera movement thread
+        self.camera_move_active = True
+        self.camera_move_thread = threading.Thread(target=self._camera_move_worker, daemon=True)
+        self.camera_move_thread.start()
+        
+        print(f"✓ Initialized Interactive Ray Tracer ({width}x{height})")
+        print(f"  Controls: WASD+Space/Ctrl to move, Right Mouse to rotate")
+        print(f"  Object Drag: Hold X/Y/Z + Left Click + Drag")
+    
+    def _init_camera(self):
+        """Initialize camera position and orientation"""
+        self.camera.position = Vector3(0, 2, 5)
+        self.camera.target = Vector3(0, 0, -1)
+        self.camera.up = Vector3(0, 1, 0)
+        self.camera.fov = 45.0
+    
+    # ------------------------------------------------------------------
+    # Core Public API
+    # ------------------------------------------------------------------
     
     def get_selected_object(self) -> Optional[Sphere]:
         """Get currently selected object"""
-        idx = self.settings['selected_object']
-        if 0 <= idx < len(self.scene.spheres):
-            return self.scene.spheres[idx]
-        return None
+        selected_idx = self.settings['selected_object']
+        return self._get_sphere_by_id(selected_idx)
     
     def select_object_by_click(self, x: float, y: float) -> bool:
-        """Select object by screen coordinates"""
+        """Select object by screen coordinates using ray casting"""
         try:
             with self.render_lock:
-                object_id = self.ray_tracer.select_object(x, y, self.width, self.height)
-                if 0 <= object_id < len(self.scene.spheres):
-                    self.settings['selected_object'] = object_id
-                    obj = self.get_selected_object()
-                    if obj:
-                        return True
+                # Convert screen coordinates to NDC
+                ndc_x = (2.0 * x - 1.0)
+                ndc_y = (1.0 - 2.0 * y)
+                
+                # Get camera parameters
+                camera = self.camera
+                fov = camera.fov * 3.14159 / 180.0
+                aspect_ratio = self.width / self.height
+                tan_fov = math.tan(fov / 2.0)
+                
+                # Calculate camera basis
+                forward = (camera.target - camera.position).normalize()
+                right = forward.cross(Vector3(0, 1, 0)).normalize()
+                up = right.cross(forward).normalize()
+                
+                # Calculate ray direction
+                ray_dir_x = ndc_x * tan_fov * aspect_ratio
+                ray_dir_y = ndc_y * tan_fov
+                ray_dir = (forward + right * ray_dir_x + up * ray_dir_y).normalize()
+                
+                # Find closest intersected object
+                closest_t = float('inf')
+                closest_obj_id = -1
+                
+                for sphere in self.scene.spheres:
+                    # Skip ground for selection
+                    if sphere.object_id == 0:
+                        continue
+                        
+                    # Sphere intersection test
+                    oc = camera.position - sphere.center
+                    a = ray_dir.dot(ray_dir)
+                    b = 2.0 * oc.dot(ray_dir)
+                    c = oc.dot(oc) - sphere.radius * sphere.radius
+                    discriminant = b * b - 4 * a * c
+                    
+                    if discriminant > 0:
+                        t = (-b - math.sqrt(discriminant)) / (2.0 * a)
+                        if t > 0.001 and t < closest_t:
+                            closest_t = t
+                            closest_obj_id = sphere.object_id
+                
+                if closest_obj_id >= 0:
+                    self.settings['selected_object'] = closest_obj_id
+                    self.object_dragger.selected_object_id = closest_obj_id
+                    
+                    # Update GUI if available
+                    if self._gui:
+                        try:
+                            self._gui.control_panel.object_select.setCurrentIndex(closest_obj_id)
+                            self._gui.control_panel.update_object_info()
+                            self._gui.control_panel.update_material_sliders()
+                        except:
+                            pass
+                    
+                    return True
+                    
         except Exception as e:
             print(f"Object selection error: {e}")
+            import traceback
+            traceback.print_exc()
+        
         return False
-    
-    def start_object_dragging(self, x: float, y: float) -> bool:
-        """Start dragging an object"""
-        if self.select_object_by_click(x, y):
-            obj = self.get_selected_object()
-            if obj and obj.object_id > 0:  # Don't drag ground
-                self.dragging_object = True
-                self.selected_object_id = obj.object_id
-                self.drag_start_pos = (x, y)
-                self.drag_start_object_pos = obj.center
-                
-                if self.render_mode == RenderMode.RAYTRACING:
-                    self.render_mode = RenderMode.SILHOUETTE
-                
-                return True
-        return False
-    
-    def update_object_dragging(self, dx: float, dy: float):
-        """Update object position during dragging"""
-        if not self.dragging_object:
-            return
-        
-        obj = self.get_selected_object()
-        if not obj or obj.object_id != self.selected_object_id:
-            return
-        
-        speed = self.settings['move_speed'] * 2.0
-        
-        # Convert screen movement to world movement
-        world_dx = self.camera_right * dx * 2.0
-        world_dy = self.camera_up * (-dy) * 2.0
-        
-        # Apply dimension locks
-        if self.lock_x:
-            world_dx.x = 0
-            world_dy.x = 0
-        if self.lock_y:
-            world_dx.y = 0
-            world_dy.y = 0
-        if self.lock_z:
-            world_dx.z = 0
-            world_dy.z = 0
-        
-        # Calculate new position
-        move_vector = (world_dx + world_dy) * speed
-        new_pos = self.drag_start_object_pos + move_vector
-        
-        # Apply bounds
-        new_pos.x = max(-8, min(8, new_pos.x))
-        new_pos.y = max(0.1, min(8, new_pos.y))
-        new_pos.z = max(-8, min(2, new_pos.z))
-        
-        # Update object
-        obj.center = new_pos
-        self.ray_tracer.set_scene(self.scene)
-        
-        self._process_frame_for_display(0.016)
-    
-    def stop_object_dragging(self):
-        """Stop dragging object"""
-        self.dragging_object = False
-        self.lock_x = self.lock_y = self.lock_z = False
-        self.render_mode = RenderMode.RAYTRACING
-        self.restart_rendering()
-    
-    def set_dimension_lock(self, dimension: str, state: bool):
-        """Lock/unlock a dimension for dragging"""
-        if dimension == 'x':
-            self.lock_x = state
-        elif dimension == 'y':
-            self.lock_y = state
-        elif dimension == 'z':
-            self.lock_z = state
     
     def move_object(self, dx: float, dy: float, dz: float):
         """Move selected object with keyboard"""
@@ -542,17 +722,27 @@ class RayTracerInteraction:
             obj = self.get_selected_object()
             if obj and obj.object_id > 0:
                 speed = self.settings['move_speed']
-                obj.center.x += dx * speed
-                obj.center.y += dy * speed
-                obj.center.z += dz * speed
                 
-                # Bounds
+                # Calculate movement in world space
+                if abs(dx) > 0:
+                    obj.center.x += dx * speed
+                if abs(dy) > 0:
+                    obj.center.y += dy * speed
+                if abs(dz) > 0:
+                    obj.center.z += dz * speed
+                
+                # Apply bounds
                 obj.center.x = max(-8, min(8, obj.center.x))
                 obj.center.y = max(0.1, min(8, obj.center.y))
                 obj.center.z = max(-8, min(2, obj.center.z))
                 
+                # Update scene
                 self.ray_tracer.set_scene(self.scene)
                 self.restart_rendering()
+                
+                # Update GUI if available
+                if self._gui:
+                    self._gui.control_panel.update_object_info()
     
     def update_object_material(self, property_name: str, value: float):
         """Update material property of selected object"""
@@ -567,14 +757,23 @@ class RayTracerInteraction:
             
             self.restart_rendering()
     
+    def update_object_material_immediate(self):
+        """Update material immediately and restart rendering"""
+        with self.render_lock:
+            self.ray_tracer.set_scene(self.scene)
+            self.restart_rendering()
+    
     def update_light_intensity(self, intensity: float):
         """Update light intensity for selected light"""
         obj = self.get_selected_object()
         if obj and hasattr(obj.material, 'emission'):
             emission = obj.material.emission
-            is_light = emission.x > 1.0 or emission.y > 1.0 or emission.z > 1.0
+            
+            # Check if it's a light (has non-zero emission)
+            is_light = emission.x > 0.1 or emission.y > 0.1 or emission.z > 0.1
             
             if is_light:
+                # Map intensity to emission color preserving ratios
                 current_max = max(emission.x, emission.y, emission.z)
                 if current_max > 0:
                     scale = intensity / current_max
@@ -583,12 +782,184 @@ class RayTracerInteraction:
                         emission.y * scale,
                         emission.z * scale
                     )
-                    self.restart_rendering()
+                
+                # Update scene
+                self.ray_tracer.set_scene(self.scene)
+                self.restart_rendering()
+    
+    def add_object_to_scene(self, sphere: Sphere):
+        """Add a new object to the scene"""
+        with self.render_lock:
+            self.scene.spheres.append(sphere)
+            self.scene.build_bvh()
+            self.ray_tracer.set_scene(self.scene)
+            
+            # Update selected object to the new one
+            self.settings['selected_object'] = sphere.object_id
+            self.object_dragger.selected_object_id = sphere.object_id
+            
+            self.restart_rendering()
+    
+    def remove_object_from_scene(self, object_id: int):
+        """Remove object from scene by ID"""
+        with self.render_lock:
+            # Find and remove object
+            for i, sphere in enumerate(self.scene.spheres):
+                if sphere.object_id == object_id:
+                    del self.scene.spheres[i]
+                    break
+            
+            # Rebuild BVH
+            self.scene.build_bvh()
+            self.ray_tracer.set_scene(self.scene)
+            
+            # Update selected object if needed
+            if self.settings['selected_object'] >= len(self.scene.spheres):
+                self.settings['selected_object'] = max(0, len(self.scene.spheres) - 1)
+            
+            self.restart_rendering()
+    
+    def _get_sphere_by_id(self, object_id: int) -> Optional[Sphere]:
+        """Helper method to get sphere by object ID"""
+        for sphere in self.scene.spheres:
+            if sphere.object_id == object_id:
+                return sphere
+        return None
+    
+    # ------------------------------------------------------------------
+    # Camera Control Methods
+    # ------------------------------------------------------------------
+    
+    def set_camera_key_state(self, key: str, state: bool):
+        """Update camera key state"""
+        if key in self.camera_controller.keys_pressed:
+            with self.render_lock:
+                current_time = time.time()
+                
+                # Debouncing
+                if hasattr(self, '_last_key_event_time'):
+                    if current_time - self._last_key_event_time < 0.01:  # 10ms debounce
+                        return
+                self._last_key_event_time = current_time
+                
+                old_state = self.camera_controller.keys_pressed[key]
+                if state == old_state:
+                    return
+                
+                self.camera_controller.keys_pressed[key] = state
+                
+                # Track manual movement
+                if state:
+                    self._last_manual_movement = current_time
+                
+                # Track if ANY key is newly pressed
+                any_key_newly_pressed = False
+                for k, v in self.camera_controller.keys_pressed.items():
+                    if v and (k not in self._last_key_states or not self._last_key_states[k]):
+                        any_key_newly_pressed = True
+                        break
+                
+                # Store current key states
+                self._last_key_states = self.camera_controller.keys_pressed.copy()
+                
+                # If ANY key is newly pressed and we're in raytracing, switch to wireframe
+                if any_key_newly_pressed and self.render_state.current_mode == RenderMode.RAYTRACING:
+                    self.render_state.start_interaction()
+                    self._process_frame_for_display(0.016)
+                
+                # If key was just released
+                elif not state and old_state:
+                    # Check if ALL keys are now released
+                    all_released = not any(self.camera_controller.keys_pressed.values())
+                    
+                    if all_released and not self.camera_controller.rotating:
+                        self._handle_all_keys_released()
+    
+    def start_camera_rotation(self, x: float, y: float):
+        """Start camera rotation with mouse"""
+        with self.render_lock:
+            self.camera_controller.rotating = True
+            self.camera_controller.last_mouse_pos = (x, y)
+            self.render_state.start_interaction()
+    
+    def update_camera_rotation(self, dx: float, dy: float):
+        """Update camera rotation based on mouse movement"""
+        with self.render_lock:
+            if not self.camera_controller.rotating:
+                return
+            
+            self.render_state.update_interaction()
+            self.camera_controller.rotate(dx, dy)
+            
+            # Also update the ray tracer's camera
+            rt_camera = self.ray_tracer.get_camera()
+            rt_camera.target = self.camera.target
+            rt_camera.position = self.camera.position
+            
+            # Force display update
+            self._process_frame_for_display(0.05)
+    
+    def stop_camera_rotation(self):
+        """Stop camera rotation and return to previous mode"""
+        with self.render_lock:
+            was_rotating = self.camera_controller.rotating
+            self.camera_controller.rotating = False
+            self.camera_controller.last_mouse_pos = None
+            
+            if was_rotating:
+                self._handle_rotation_stopped()
+    
+    # ------------------------------------------------------------------
+    # Object Dragging Methods
+    # ------------------------------------------------------------------
+    
+    def start_object_dragging(self, x: float, y: float) -> bool:
+        """Start dragging an object"""
+        # First try to select the object
+        if self.select_object_by_click(x, y):
+            obj = self.get_selected_object()
+            if obj and obj.object_id > 0:  # Don't drag ground
+                self.object_dragger.dragging = True
+                self.object_dragger.selected_object_id = obj.object_id
+                self.object_dragger.drag_start_pos = (x, y)
+                self.object_dragger.drag_start_object_pos = obj.center
+                
+                # Update render state
+                if self.render_state.current_mode == RenderMode.RAYTRACING:
+                    self.render_state.set_mode(RenderMode.SILHOUETTE)
+                
+                return True
+        return False
+    
+    def update_object_dragging(self, dx: float, dy: float):
+        """Update object position during dragging"""
+        if not self.object_dragger.dragging:
+            return
+        
+        self.object_dragger.update_drag(dx, dy)
+        
+        # Update ray tracer scene
+        self.ray_tracer.set_scene(self.scene)
+        self._process_frame_for_display(0.016)
+    
+    def stop_object_dragging(self):
+        """Stop dragging object"""
+        self.object_dragger.stop_drag()
+        self.render_state.set_mode(RenderMode.RAYTRACING)
+        self.restart_rendering()
+    
+    def set_dimension_lock(self, dimension: str, state: bool):
+        """Lock/unlock a dimension for dragging"""
+        self.object_dragger.set_dimension_lock(dimension, state)
+    
+    # ------------------------------------------------------------------
+    # Rendering Methods
+    # ------------------------------------------------------------------
     
     def restart_rendering(self):
         """Restart ray tracing"""
         with self.render_lock:
-            self.is_rendering = False
+            self.render_state.is_rendering = False
             time.sleep(0.02)
             
             self.accumulated_image = None
@@ -599,10 +970,10 @@ class RayTracerInteraction:
     
     def start_rendering(self):
         """Start progressive rendering"""
-        if self.is_rendering:
+        if self.render_state.is_rendering:
             return
         
-        self.is_rendering = True
+        self.render_state.is_rendering = True
         self.accumulated_image = np.zeros((self.height, self.width, 3), dtype=np.float32)
         self.total_samples = 0
         
@@ -610,10 +981,87 @@ class RayTracerInteraction:
         render_thread.daemon = True
         render_thread.start()
     
+    # ------------------------------------------------------------------
+    # Internal Worker Methods
+    # ------------------------------------------------------------------
+    
+    def _camera_move_worker(self):
+        """Continuous camera movement worker thread with frame limiting"""
+        limiter = FrameRateLimiter(30)
+        
+        while self.camera_move_active:
+            try:
+                current_time = time.time()
+                
+                # Check if we should return to ray tracing after interaction timeout
+                # Fix: Add check for recent manual movement
+                time_since_last_manual = current_time - self._last_manual_movement
+                if (self.render_state.should_return_to_raytracing() and
+                    not any(self.camera_controller.keys_pressed.values()) and
+                    not self.camera_controller.rotating and
+                    time_since_last_manual > 0.5):  # 500ms delay after manual movement
+                    
+                    with self.render_lock:
+                        self.render_state.return_to_previous_mode()
+                
+                # Process camera movement - FIX: Check if keys are actually pressed
+                # and prevent auto-movement
+                keys_pressed = any(self.camera_controller.keys_pressed.values())
+                if keys_pressed and not self._camera_auto_move_fix:
+                    # Ensure we're in wireframe mode when moving
+                    if self.render_state.current_mode != RenderMode.WIREFRAME:
+                        with self.render_lock:
+                            self.render_state.start_interaction()
+                    
+                    # Process movement
+                    if limiter.should_update():
+                        self._process_camera_movement()
+                        self.render_state.update_interaction()
+                        limiter.update()
+                
+                time.sleep(0.01)
+                
+            except Exception as e:
+                print(f"Camera worker error: {e}")
+                time.sleep(0.1)
+    
+    def _process_camera_movement(self):
+        """Process continuous camera movement"""
+        with self.render_lock:
+            if not any(self.camera_controller.keys_pressed.values()):
+                return
+                
+            move_vector = self.camera_controller.get_movement_vector()
+            
+            if move_vector.length() > 0:
+                # Apply movement to BOTH the camera and ray tracer camera
+                self.camera.position = self.camera.position + move_vector
+                self.camera.target = self.camera.target + move_vector
+                
+                # Update ray tracer camera
+                rt_camera = self.ray_tracer.get_camera()
+                rt_camera.position = self.camera.position
+                rt_camera.target = self.camera.target
+                
+                # Apply bounds
+                self.camera_controller.apply_bounds()
+                rt_camera.position.x = max(-20, min(20, rt_camera.position.x))
+                rt_camera.position.y = max(0.1, min(20, rt_camera.position.y))
+                rt_camera.position.z = max(-20, min(20, rt_camera.position.z))
+                
+                self.camera_controller.update_camera_frame()
+                
+                # Ensure we're in wireframe mode during movement
+                if self.render_state.current_mode != RenderMode.WIREFRAME:
+                    self.render_state.set_mode(RenderMode.WIREFRAME)
+                
+                # Force a wireframe update
+                self._process_frame_for_display(0.05)
+    
     def _render_worker(self):
         """Worker function for ray tracing"""
         try:
-            while (self.is_rendering and 
+            while (self.render_state.is_rendering and 
                    self.total_samples < self.settings['max_samples']):
                 
                 start_time = time.time()
@@ -665,207 +1113,26 @@ class RayTracerInteraction:
             traceback.print_exc()
         
         self.frame_queue.put({'done': True})
-        self.is_rendering = False
+        self.render_state.is_rendering = False
     
-    def _render_silhouette(self) -> np.ndarray:
-        """Render silhouette view for fast object editing with proper camera projection"""
-        self.silhouette_buffer.fill(0)
-        width, height = self.width, self.height
-        
-        # Use the same camera setup as in C++ Camera::get_ray()
-        camera = self.camera
-        fov = camera.fov * 3.14159 / 180.0
-        aspect_ratio = width / height
-        tan_fov = math.tan(fov / 2.0)
-        
-        # Camera basis vectors (same as in C++)
-        forward = (camera.target - camera.position).normalize()
-        right = forward.cross(Vector3(0, 1, 0)).normalize()
-        up = right.cross(forward).normalize()
-        
-        # Helper function to project 3D point to 2D screen
-        def project_point(point: Vector3):
-            # Convert from world to camera space
-            obj_pos = point - camera.position
-            
-            # Compute coordinates in camera basis
-            z_cam = obj_pos.dot(forward)
-            if z_cam <= 0.001:  # Behind or too close to camera
-                return None
-            
-            x_cam = obj_pos.dot(right)
-            y_cam = obj_pos.dot(up)
-            
-            # Apply perspective projection (same as C++ get_ray but inverted)
-            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
-            y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
-            
-            # Clamp to screen bounds
-            x_screen = max(0, min(width - 1, x_screen))
-            y_screen = max(0, min(height - 1, y_screen))
-            
-            return (int(x_screen), int(y_screen), z_cam)
-        
-        # Render all spheres
-        for sphere in self.scene.spheres:
-            if sphere.object_id == 0:  # Skip ground
-                continue
-            
-            # Project sphere center
-            projected = project_point(sphere.center)
-            if projected is None:
-                continue
-                
-            x_screen, y_screen, z_cam = projected
-            
-            # Calculate projected radius using perspective
-            sphere_radius_pixels = (sphere.radius / (z_cam * tan_fov)) * height / 2.0
-            radius = max(2, int(sphere_radius_pixels))
-            
-            if 0 <= x_screen < width and 0 <= y_screen < height:
-                center = (int(x_screen), int(y_screen))
-                
-                # Color coding
-                if sphere.object_id == self.selected_object_id:
-                    color = (255, 255, 0)  # Yellow for selected
-                    thickness = 3
-                else:
-                    color = (200, 200, 200)  # Gray for others
-                    thickness = 1
-                
-                cv2.circle(self.silhouette_buffer, center, radius, color, thickness)
-                
-                # Crosshair for selected
-                if sphere.object_id == self.selected_object_id:
-                    cv2.line(self.silhouette_buffer,
-                            (center[0] - 10, center[1]),
-                            (center[0] + 10, center[1]),
-                            (0, 255, 255), 2)
-                    cv2.line(self.silhouette_buffer,
-                            (center[0], center[1] - 10),
-                            (center[0], center[1] + 10),
-                            (0, 255, 255), 2)
-        
-        return self.silhouette_buffer.astype(np.float32) / 255.0
-    
-    def _render_wireframe(self) -> np.ndarray:
-        """Render wireframe view for fast camera navigation"""
-        self.wireframe_buffer.fill(0)
-        width, height = self.width, self.height
-        
-        # Camera parameters
-        fov = self.camera.fov * 3.14159 / 180.0
-        aspect_ratio = width / height
-        tan_fov = np.tan(fov / 2.0)
-        
-        forward = (self.camera.target - self.camera.position).normalize()
-        right = forward.cross(Vector3(0, 1, 0)).normalize()
-        up = right.cross(forward).normalize()
-        
-        # Helper function with corrected Y axis
-        def project_point(point: Vector3) -> Optional[Tuple[int, int]]:
-            obj_pos = point - self.camera.position
-            z_cam = obj_pos.dot(forward)
-            
-            if z_cam <= 0.1:
-                return None
-            
-            x_cam = obj_pos.dot(right)
-            y_cam = obj_pos.dot(up)
-            
-            # Correct projection with Y inversion
-            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
-            y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
-            
-            # Clamp to screen bounds
-            x_screen = max(0, min(width - 1, x_screen))
-            y_screen = max(0, min(height - 1, y_screen))
-            
-            return (int(x_screen), int(y_screen))
-        
-        # Draw ground grid
-        grid_size = 10
-        grid_step = 1.0
-        for i in range(-grid_size, grid_size + 1):
-            x = i * grid_step
-            
-            # X lines
-            for j in range(-grid_size, grid_size):
-                z1 = j * grid_step
-                z2 = (j + 1) * grid_step
-                
-                p1 = Vector3(x, 0, z1)
-                p2 = Vector3(x, 0, z2)
-                
-                s1 = project_point(p1)
-                s2 = project_point(p2)
-                
-                if s1 and s2:
-                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
-            
-            # Z lines
-            for j in range(-grid_size, grid_size):
-                x1 = j * grid_step
-                x2 = (j + 1) * grid_step
-                
-                p1 = Vector3(x1, 0, x)
-                p2 = Vector3(x2, 0, x)
-                
-                s1 = project_point(p1)
-                s2 = project_point(p2)
-                
-                if s1 and s2:
-                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
-        
-        # Draw spheres
-        for sphere in self.scene.spheres:
-            if sphere.object_id == 0:
-                continue
-            
-            center_screen = project_point(sphere.center)
-            if center_screen:
-                # Calculate screen radius
-                distance = (sphere.center - self.camera.position).dot(forward)
-                if distance > 0:
-                    radius_screen = (sphere.radius / (distance * tan_fov)) * height / 2.0
-                    radius_screen = max(2, int(radius_screen))
-                    
-                    # Color
-                    if sphere.object_id == self.selected_object_id:
-                        color = (255, 255, 0)
-                        thickness = 2
-                    else:
-                        color = (200, 200, 200)
-                        thickness = 1
-                    
-                    cv2.circle(self.wireframe_buffer, center_screen, radius_screen, color, thickness)
-                    
-                    # Axes for selected
-                    if sphere.object_id == self.selected_object_id:
-                        axes = [
-                            (Vector3(0.5, 0, 0), (255, 0, 0)),   # X - Red
-                            (Vector3(0, 0.5, 0), (0, 255, 0)),   # Y - Green
-                            (Vector3(0, 0, -0.5), (0, 0, 255))   # Z - Blue
-                        ]
-                        
-                        for axis_vec, axis_color in axes:
-                            end = sphere.center + axis_vec
-                            end_screen = project_point(end)
-                            if end_screen:
-                                cv2.line(self.wireframe_buffer, center_screen, end_screen, axis_color, 2)
-        
-        return self.wireframe_buffer.astype(np.float32) / 255.0
+    # ------------------------------------------------------------------
+    # Frame Processing Methods
+    # ------------------------------------------------------------------
     
     def _process_frame_for_display(self, render_time: float):
         """Process frame for display based on current mode"""
-        if self.render_mode == RenderMode.SILHOUETTE:
-            display_image = self._render_silhouette()
+        if self.render_state.current_mode == RenderMode.SILHOUETTE:
+            display_image = self.renderer.render_silhouette(
+                self.object_dragger.selected_object_id
+            )
             enhanced_image = display_image
             mode_str = "silhouette"
             denoised_images = {}
             
-        elif self.render_mode == RenderMode.WIREFRAME:
-            display_image = self._render_wireframe()
+        elif self.render_state.current_mode == RenderMode.WIREFRAME:
+            display_image = self.renderer.render_wireframe(
+                self.object_dragger.selected_object_id
+            )
             enhanced_image = display_image
             mode_str = "wireframe"
             denoised_images = {}
@@ -894,10 +1161,57 @@ class RayTracerInteraction:
             'samples': self.total_samples,
             'render_time': render_time,
             'mode': mode_str,
-            'is_raytracing': self.render_mode == RenderMode.RAYTRACING
+            'is_raytracing': self.render_state.current_mode == RenderMode.RAYTRACING
         }
         
         self.frame_queue.put(frame_data)
+    
+    # ------------------------------------------------------------------
+    # Internal Helper Methods
+    # ------------------------------------------------------------------
+    
+    def _handle_all_keys_released(self):
+        """Handle when all movement keys are released"""
+        print(f"All keys released, previous mode: {self.render_state.previous_mode}")
+        
+        if self.render_state.previous_mode == RenderMode.RAYTRACING:
+            # Small delay to ensure all key events are processed
+            time.sleep(0.02)
+            
+            # Double-check no keys are pressed
+            if not any(self.camera_controller.keys_pressed.values()):
+                # Update ray tracer camera
+                rt_camera = self.ray_tracer.get_camera()
+                rt_camera.position = self.camera.position
+                rt_camera.target = self.camera.target
+                rt_camera.up = self.camera.up
+                rt_camera.fov = self.camera.fov
+
+                self.render_state.set_mode(RenderMode.RAYTRACING)
+                self.restart_rendering()
+        else:
+            self.render_state.return_to_previous_mode()
+            self._process_frame_for_display(0.016)
+    
+    def _handle_rotation_stopped(self):
+        """Handle when camera rotation stops"""
+        if self.render_state.previous_mode == RenderMode.RAYTRACING:
+            # Reset interaction state
+            self.render_state.interaction_in_progress = False
+            
+            # Short delay before returning to ray tracing
+            time.sleep(0.05)
+            
+            # Switch back to ray tracing
+            self.render_state.set_mode(RenderMode.RAYTRACING)
+            print("Camera rotation stopped, returning to ray tracing")
+            
+            # Restart ray tracing
+            self.restart_rendering()
+        else:
+            # Return to whatever mode we were in before
+            self.render_state.return_to_previous_mode()
+            self._process_frame_for_display(0.016)
     
     def _tone_map(self, image: np.ndarray, exposure: float) -> np.ndarray:
         """Apply tone mapping"""
@@ -915,6 +1229,14 @@ class RayTracerInteraction:
             return np.clip(enhanced, 0, 1)
         return image
     
+    # ------------------------------------------------------------------
+    # Public Getter Methods
+    # ------------------------------------------------------------------
+    
+    def get_object_count(self) -> int:
+        """Get number of interactive objects (excluding ground)"""
+        return len(self.scene.spheres) - 1
+    
     def has_frames(self) -> bool:
         """Check if frames are available"""
         return not self.frame_queue.empty()
@@ -928,7 +1250,7 @@ class RayTracerInteraction:
     
     def stop_rendering(self):
         """Stop all rendering"""
-        self.is_rendering = False
+        self.render_state.is_rendering = False
         self.camera_move_active = False
         if self.camera_move_thread:
             self.camera_move_thread.join(timeout=1.0)

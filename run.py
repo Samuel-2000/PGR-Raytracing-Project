@@ -121,7 +121,7 @@ def main():
         gui.show()
         
         print("Controls:")
-        print("  Camera Movement: WASD + Space/Ctrl")
+        print("  Camera Movement: WASD + Space/Shift")
         print("  Camera Rotation: Right Mouse Button + Drag")
         print("  Object Selection: Left Click")
         print("  Object Dragging: Hold X/Y/Z + Left Click + Drag")
