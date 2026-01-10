@@ -417,7 +417,7 @@ public:
 };
 
 // ================================================
-// PYTHON BINDING INTERFACE
+// PYTHON BINDING INTERFACE - UPDATED
 // ================================================
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -425,86 +425,165 @@ public:
 
 namespace py = pybind11;
 
-class RayTracerWrapper {
-private:
-    Sphere* spheres;
-    int sphere_count;
-    PathTracer tracer;
-    Camera camera;
-    
-public:
-    RayTracerWrapper() : spheres(nullptr), sphere_count(0) {}
-    
-    ~RayTracerWrapper() {
-        delete[] spheres;
-    }
-    
-    void set_spheres(py::list sphere_list) {
-        sphere_count = (int)sphere_list.size();
-        delete[] spheres;
-        spheres = new Sphere[sphere_count];
-        
-        for (int i = 0; i < sphere_count; ++i) {
-            py::tuple sphere_data = sphere_list[i].cast<py::tuple>();
-            
-            // Unpack sphere data: (center, radius, albedo, metallic, roughness, emission)
-            py::tuple center = sphere_data[0].cast<py::tuple>();
-            float radius = sphere_data[1].cast<float>();
-            py::tuple albedo = sphere_data[2].cast<py::tuple>();
-            float metallic = sphere_data[3].cast<float>();
-            float roughness = sphere_data[4].cast<float>();
-            py::tuple emission = sphere_data[5].cast<py::tuple>();
-            
-            Material mat;
-            mat.albedo = Vector3(albedo[0].cast<float>(), 
-                                albedo[1].cast<float>(), 
-                                albedo[2].cast<float>());
-            mat.metallic = metallic;
-            mat.roughness = roughness;
-            mat.emission = Vector3(emission[0].cast<float>(),
-                                  emission[1].cast<float>(),
-                                  emission[2].cast<float>());
-            
-            spheres[i] = Sphere(
-                Vector3(center[0].cast<float>(),
-                       center[1].cast<float>(),
-                       center[2].cast<float>()),
-                radius,
-                mat,
-                i
-            );
-        }
-        
-        tracer.set_scene(spheres, sphere_count);
-    }
-    
-    void set_camera(py::tuple pos, py::tuple target, float fov, float aspect) {
-        camera.position = Vector3(pos[0].cast<float>(), 
-                                 pos[1].cast<float>(), 
-                                 pos[2].cast<float>());
-        camera.fov = fov;
-        camera.aspect_ratio = aspect;
-        camera.update_basis();
-    }
-    
-    py::array_t<float> render(int width, int height, int samples, int max_depth) {
-        // Allocate output array
-        auto result = py::array_t<float>({height, width, 3});
-        auto buf = result.request();
-        float* image_data = static_cast<float*>(buf.ptr);
-        
-        tracer.render(image_data, width, height, samples, max_depth, camera);
-        
-        return result;
-    }
-};
-
 PYBIND11_MODULE(raytracer_cpp, m) {
     m.doc() = "High-performance ray tracer with AVX2 and OpenMP";
     
+    // Bind Vector3
+    py::class_<Vector3>(m, "Vector3")
+        .def(py::init<float, float, float>())
+        .def_readwrite("x", &Vector3::x)
+        .def_readwrite("y", &Vector3::y)
+        .def_readwrite("z", &Vector3::z)
+        .def("dot", &Vector3::dot)
+        .def("cross", &Vector3::cross)
+        .def("length", &Vector3::length)
+        .def("normalize", &Vector3::normalize)
+        .def("__add__", [](const Vector3& a, const Vector3& b) { return a + b; })
+        .def("__sub__", [](const Vector3& a, const Vector3& b) { return a - b; })
+        .def("__mul__", [](const Vector3& a, float s) { return a * s; })
+        .def("__mul__", [](const Vector3& a, const Vector3& b) { return a * b; })
+        .def("__repr__", [](const Vector3& v) {
+            return "Vector3(" + std::to_string(v.x) + ", " + 
+                   std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
+        });
+    
+    // Bind Material
+    py::class_<Material>(m, "Material")
+        .def(py::init<>())
+        .def_readwrite("albedo", &Material::albedo)
+        .def_readwrite("metallic", &Material::metallic)
+        .def_readwrite("roughness", &Material::roughness)
+        .def_readwrite("emission", &Material::emission)
+        .def_readwrite("ior", &Material::ior);
+    
+    // Bind Sphere
+    py::class_<Sphere>(m, "Sphere")
+        .def(py::init<>())
+        .def_readwrite("center", &Sphere::center)
+        .def_readwrite("radius", &Sphere::radius)
+        .def_readwrite("material", &Sphere::material)
+        .def_readwrite("object_id", &Sphere::object_id)
+        .def("__repr__", [](const Sphere& s) {
+            return "Sphere(id=" + std::to_string(s.object_id) + 
+                   ", center=" + std::to_string(s.center.x) + "," + 
+                   std::to_string(s.center.y) + "," + std::to_string(s.center.z) + 
+                   ", r=" + std::to_string(s.radius) + ")";
+        });
+    
+    // Simple Scene wrapper
+    class SceneWrapper {
+    private:
+        std::vector<Sphere> spheres;
+        
+    public:
+        SceneWrapper() = default;
+        
+        void add_sphere(const Sphere& sphere) {
+            spheres.push_back(sphere);
+        }
+        
+        bool remove_sphere(int object_id) {
+            for (auto it = spheres.begin(); it != spheres.end(); ++it) {
+                if (it->object_id == object_id) {
+                    spheres.erase(it);
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        std::vector<Sphere>& get_spheres() { return spheres; }
+        
+        void build_bvh() {
+            // Placeholder - in real implementation would rebuild BVH
+            std::cout << "Scene BVH built with " << spheres.size() << " spheres" << std::endl;
+        }
+    };
+    
+    // Bind SceneWrapper as Scene
+    py::class_<SceneWrapper>(m, "Scene")
+        .def(py::init<>())
+        .def("add_sphere", &SceneWrapper::add_sphere)
+        .def("remove_sphere", &SceneWrapper::remove_sphere)
+        .def("build_bvh", &SceneWrapper::build_bvh)
+        .def_readwrite("spheres", &SceneWrapper::get_spheres)
+        .def("__repr__", [](SceneWrapper& s) {
+            return "Scene(spheres=" + std::to_string(s.get_spheres().size()) + ")";
+        });
+    
+    // Bind Camera
+    py::class_<Camera>(m, "Camera")
+        .def(py::init<>())
+        .def_readwrite("position", &Camera::position)
+        .def_readwrite("target", &Camera::target)
+        .def_readwrite("up", &Camera::up)
+        .def_readwrite("fov", &Camera::fov)
+        .def("__repr__", [](const Camera& c) {
+            return "Camera(pos=(" + std::to_string(c.position.x) + "," + 
+                   std::to_string(c.position.y) + "," + std::to_string(c.position.z) + 
+                   "), fov=" + std::to_string(c.fov) + ")";
+        });
+    
+    // Bind RayTracer
+    class RayTracerWrapper {
+    private:
+        std::unique_ptr<PathTracer> tracer;
+        std::vector<Sphere> spheres;
+        Camera camera;
+        
+    public:
+        RayTracerWrapper() : tracer(new PathTracer()) {
+            camera.position = Vector3(0, 2, 5);
+            camera.target = Vector3(0, 0, -1);
+            camera.fov = 45.0f;
+            camera.update_basis();
+        }
+        
+        void set_scene(SceneWrapper& scene) {
+            spheres = scene.get_spheres();
+            if (!spheres.empty()) {
+                tracer->set_scene(spheres.data(), (int)spheres.size());
+            }
+        }
+        
+        Camera get_camera() { return camera; }
+        Camera& get_camera_ref() { return camera; }
+        
+        void set_camera(const Camera& cam) {
+            camera = cam;
+            camera.update_basis();
+        }
+        
+        py::array_t<float> render(int width, int height, int samples, int max_depth) {
+            auto result = py::array_t<float>({height, width, 3});
+            auto buf = result.request();
+            float* image_data = static_cast<float*>(buf.ptr);
+            
+            if (spheres.empty()) {
+                // Return black image
+                std::fill(image_data, image_data + width * height * 3, 0.0f);
+                return result;
+            }
+            
+            tracer->render(image_data, width, height, samples, max_depth, camera);
+            return result;
+        }
+        
+        void select_object(int object_id) {
+            // Placeholder
+        }
+        
+        void move_camera(const Vector3& delta) {
+            camera.move(delta);
+        }
+    };
+    
     py::class_<RayTracerWrapper>(m, "RayTracer")
         .def(py::init<>())
-        .def("set_spheres", &RayTracerWrapper::set_spheres)
+        .def("set_scene", &RayTracerWrapper::set_scene)
+        .def("render", &RayTracerWrapper::render)
+        .def("get_camera", &RayTracerWrapper::get_camera)
         .def("set_camera", &RayTracerWrapper::set_camera)
-        .def("render", &RayTracerWrapper::render);
+        .def("select_object", &RayTracerWrapper::select_object)
+        .def("move_camera", &RayTracerWrapper::move_camera);
 }

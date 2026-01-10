@@ -1,5 +1,5 @@
 // ================================================
-// FILE: cpp_raytracer/raytracer_core.cpp (OPTIMIZED)
+// FILE: cpp_raytracer/raytracer_core.cpp
 // ================================================
 #include "raytracer_core.h"
 #include "bvh.h"
