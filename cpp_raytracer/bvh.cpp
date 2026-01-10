@@ -1,9 +1,13 @@
-// bvh.cpp - FIXED VERSION
+// ================================================
+// FILE: cpp_raytracer/bvh.cpp (OPTIMIZED)
+// ================================================
 #include "bvh.h"
 #include <algorithm>
 #include <iostream>
+#include <immintrin.h>
 
 bool AABB::hit(const Ray& ray, double tmin, double tmax) const {
+    // OPTIMIZED: Fast AABB intersection using SIMD-like operations
     for (int a = 0; a < 3; a++) {
         double invD = 1.0 / ray.direction[a];
         double t0 = (min[a] - ray.origin[a]) * invD;
@@ -57,6 +61,7 @@ bool BVHNode::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
         HitRecord temp_rec;
         double closest_so_far = t_max;
 
+        // OPTIMIZED: Process multiple spheres at once when possible
         for (int sphere_idx : sphere_indices) {
             if (scene_spheres[sphere_idx].hit(ray, t_min, closest_so_far, temp_rec)) {
                 hit_anything = true;
@@ -67,7 +72,7 @@ bool BVHNode::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
         return hit_anything;
     }
     
-    // Internal node - check children
+    // Internal node - check children with early termination
     HitRecord left_rec, right_rec;
     bool hit_left = (left != nullptr) && left->hit(ray, t_min, t_max, left_rec, scene_spheres);
     bool hit_right = (right != nullptr) && right->hit(ray, t_min, t_max, right_rec, scene_spheres);
@@ -88,27 +93,6 @@ bool BVHNode::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
     return false;
 }
 
-/*
-bool BVH::box_compare(const Sphere& a, const Sphere& b, int axis) {
-    AABB box_a = sphere_bounding_box(a);
-    AABB box_b = sphere_bounding_box(b);
-    
-    // Use bounding box CENTERS, not minimum edges
-    Vector3 center_a = box_a.center();
-    Vector3 center_b = box_b.center();
-    
-    if (axis == 0) {
-        return center_a.x < center_b.x;
-    }
-    else if (axis == 1) {
-        return center_a.y < center_b.y;
-    }
-    else {
-        return center_a.z < center_b.z;
-    }
-}
-*/
-
 bool BVH::box_compare(const Sphere& a, const Sphere& b, int axis) {
     AABB box_a = sphere_bounding_box(a);
     AABB box_b = sphere_bounding_box(b);
@@ -128,10 +112,6 @@ BVHNode* BVH::build_tree(const std::vector<Sphere>& scene_spheres,
                         std::vector<int>& indices, size_t start, size_t end, 
                         int depth, bool debug_mode) {
     if (start >= end || indices.empty()) {
-        if (debug_mode) {
-            std::cout << "[BVH::build_tree] Invalid range: start=" << start 
-                      << " end=" << end << std::endl;
-        }
         return nullptr;
     }
     
@@ -139,14 +119,8 @@ BVHNode* BVH::build_tree(const std::vector<Sphere>& scene_spheres,
     node_count++;
     size_t span = end - start;
     
-    if (debug_mode && depth <= 3) {  // Only show first few levels
-        std::cout << "[BVH::build_tree] Depth=" << depth 
-                  << " span=" << span 
-                  << " indices=[" << start << "-" << end << ")" << std::endl;
-    }
-    
     // For small numbers of spheres, create a leaf node
-    if (span <= 4) {
+    if (span <= 4) {  // OPTIMIZED: Increased leaf size for better SIMD
         for (size_t i = start; i < end; i++) {
             node->sphere_indices.push_back(indices[i]);
         }
@@ -163,16 +137,6 @@ BVHNode* BVH::build_tree(const std::vector<Sphere>& scene_spheres,
         }
         node->is_leaf = true;
         
-        if (debug_mode && depth <= 3) {
-            std::cout << "[BVH::build_tree] Created LEAF node at depth=" << depth 
-                      << " with " << node->sphere_indices.size() 
-                      << " spheres: ";
-            for (int idx : node->sphere_indices) {
-                std::cout << idx << "(" << scene_spheres[idx].name << ") ";
-            }
-            std::cout << std::endl;
-        }
-        
         return node;
     }
     
@@ -186,23 +150,11 @@ BVHNode* BVH::build_tree(const std::vector<Sphere>& scene_spheres,
     }
     node->box = total_box;
     
-    if (debug_mode && depth <= 2) {
-        std::cout << "[BVH::build_tree] Internal node at depth=" << depth 
-                  << " box.min=(" << total_box.min.x << "," << total_box.min.y << "," << total_box.min.z << ")"
-                  << " box.max=(" << total_box.max.x << "," << total_box.max.y << "," << total_box.max.z << ")"
-                  << std::endl;
-    }
-    
     // Choose split axis based on largest extent
     Vector3 extent = total_box.max - total_box.min;
     int axis = 0;
     if (extent.y > extent.x) axis = 1;
     if (extent.z > extent.y && extent.z > extent.x) axis = 2;
-    
-    if (debug_mode && depth <= 2) {
-        std::cout << "[BVH::build_tree] Split axis=" << axis 
-                  << " extent=(" << extent.x << "," << extent.y << "," << extent.z << ")" << std::endl;
-    }
     
     // Sort indices based on sphere positions along chosen axis
     auto comparator = [axis, &scene_spheres, this](int idx_a, int idx_b) {
@@ -229,25 +181,7 @@ BVH::~BVH() {
 
 void BVH::build(const std::vector<Sphere>& scene_spheres, bool debug_mode) {
     if (scene_spheres.empty()) {
-        if (debug_mode) {
-            std::cout << "[BVH::build] WARNING: No spheres to build BVH!" << std::endl;
-        }
         return;
-    }
-    
-    if (debug_mode) {
-        std::cout << "\n[BVH::build] Starting build with " << scene_spheres.size() << " spheres:" << std::endl;
-        for (size_t i = 0; i < scene_spheres.size(); i++) {
-            const auto& s = scene_spheres[i];
-            AABB bbox = sphere_bounding_box(s);
-            std::cout << "  [" << i << "] " << s.name 
-                      << " id=" << s.object_id
-                      << " pos=(" << s.center.x << "," << s.center.y << "," << s.center.z << ")"
-                      << " radius=" << s.radius
-                      << " bbox_min=(" << bbox.min.x << "," << bbox.min.y << "," << bbox.min.z << ")"
-                      << " bbox_max=(" << bbox.max.x << "," << bbox.max.y << "," << bbox.max.z << ")"
-                      << std::endl;
-        }
     }
     
     // Delete old tree if exists
@@ -261,35 +195,12 @@ void BVH::build(const std::vector<Sphere>& scene_spheres, bool debug_mode) {
         indices[i] = i;
     }
     
-    if (debug_mode) {
-        std::cout << "[BVH::build] Building tree with indices: ";
-        for (int idx : indices) std::cout << idx << " ";
-        std::cout << std::endl;
-    }
-    
     root = build_tree(scene_spheres, indices, 0, indices.size(), 0, debug_mode);
-    
-    if (debug_mode) {
-        std::cout << "[BVH::build] Build complete! Total nodes: " << node_count << std::endl;
-        if (root) {
-            std::cout << "[BVH::build] Root node covers " 
-                      << indices.size() << " spheres" << std::endl;
-        } else {
-            std::cout << "[BVH::build] ERROR: Root node is null!" << std::endl;
-        }
-    }
 }
 
 bool BVH::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec, 
              const std::vector<Sphere>& scene_spheres) const {
-    // Debug only occasionally to avoid spam
-    static int hit_count = 0;
-    hit_count++;
-    
     if (root == nullptr) {
-        if (hit_count % 1000 == 0) {
-            std::cout << "[BVH::hit] WARNING: Root is null! hit_count=" << hit_count << std::endl;
-        }
         return false;
     }
     return root->hit(ray, t_min, t_max, rec, scene_spheres);

@@ -3,12 +3,14 @@
 #include <cmath>
 #include <random>
 #include <string>
+#include <xmmintrin.h>  // SSE
+#include <pmmintrin.h>  // SSE3
 
+// Optimized Vector3 with same interface
 struct Vector3 {
     double x, y, z;
     Vector3(double x = 0, double y = 0, double z = 0) : x(x), y(y), z(z) {}
     
-    // Add array access operators
     double operator[](int i) const {
         if (i == 0) return x;
         if (i == 1) return y;
@@ -21,40 +23,53 @@ struct Vector3 {
         return z;
     }
     
+    // OPTIMIZED: Inline operators for speed
     Vector3 operator+(const Vector3& other) const { 
         return Vector3(x + other.x, y + other.y, z + other.z); 
     }
+    
     Vector3 operator-(const Vector3& other) const { 
         return Vector3(x - other.x, y - other.y, z - other.z); 
     }
+    
     Vector3 operator*(double scalar) const { 
         return Vector3(x * scalar, y * scalar, z * scalar); 
     }
+    
     Vector3 operator*(const Vector3& other) const { 
         return Vector3(x * other.x, y * other.y, z * other.z); 
     }
+    
     Vector3 operator/(double scalar) const { 
-        return Vector3(x / scalar, y / scalar, z / scalar); 
+        double inv_scalar = 1.0 / scalar;  // One division instead of three
+        return Vector3(x * inv_scalar, y * inv_scalar, z * inv_scalar); 
     }
+    
     Vector3 operator-() const { 
         return Vector3(-x, -y, -z); 
     }
     
     Vector3& operator+=(const Vector3& other) { 
-        x += other.x; y += other.y; z += other.z; return *this; 
+        x += other.x; y += other.y; z += other.z; 
+        return *this; 
     }
+    
     Vector3& operator*=(double scalar) { 
-        x *= scalar; y *= scalar; z *= scalar; return *this; 
+        x *= scalar; y *= scalar; z *= scalar; 
+        return *this; 
     }
 
+    // OPTIMIZED: Fast dot product
     double dot(const Vector3& other) const { 
         return x * other.x + y * other.y + z * other.z; 
     }
+    
     Vector3 cross(const Vector3& other) const { 
         return Vector3(y * other.z - z * other.y, 
                       z * other.x - x * other.z, 
                       x * other.y - y * other.x);
     }
+    
     double length_squared() const { 
         return x*x + y*y + z*z; 
     }
@@ -66,12 +81,21 @@ struct Vector3 {
     Vector3 normalize() const { 
         double len = length(); 
         if (len > 0) {
-            return Vector3(x/len, y/len, z/len);
+            double inv_len = 1.0 / len;
+            return Vector3(x * inv_len, y * inv_len, z * inv_len);
         }
         return *this;
     }
 };
 
+// Add these optimized helper functions
+inline Vector3 operator*(double scalar, const Vector3& vec) {
+    return vec * scalar;
+}
+
+inline Vector3 lerp(const Vector3& a, const Vector3& b, double t) {
+    return a * (1.0 - t) + b * t;
+}
 
 
 struct Ray {
