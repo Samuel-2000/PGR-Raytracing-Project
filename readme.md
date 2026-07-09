@@ -4,6 +4,8 @@
 
 ![Output Preview](rt_out.png)
 
+[GUI Preview](raytracer.mp4)
+
 ## Usage
 
 Run the program with:
